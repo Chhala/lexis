@@ -10,10 +10,11 @@
 ───────────────────────────────────────────────────────────── */
 const DB_NAME    = 'lexisDB';
 const DB_VERSION = 1;
-const THEMES_ALL = ['agriculture','anatomie','architecture','art','botanique','droit',
-  'économie','gastronomie','géographie','histoire','linguistique','littérature','marine',
-  'médecine','mesures','militaire','musique','mythologie','philosophie','politique',
-  'religion','rhétorique','sciences','sport','zoologie'];
+const THEMES_ALL = [
+  'agri.','arts','bot.','cuis.','géogr.','hist.','ling.','litt.',
+  'marit.','myth.','méd.','métro.','philo.','polit.','relig.',
+  'scien.','sports','zool.'
+];
 
 const BADGES_SERIE = [
   { id:'serie_3',   label:'🌱 Motivé',      desc:'3 jours consécutifs',   days:3,   joker:true  },
@@ -39,11 +40,14 @@ const DEFAULT_SETTINGS = {
   qcmWordsPerSession: 10, qcmChoicesCount: 4, qcmInverseMode: false,
   validDays: [1,2,3,4,5],
   soundCorrect: true, soundWrong: true, soundRewards: true,
+  soundVolume: 0.5,
   currentStreak: 0, longestStreak: 0, jokers: 0,
   badges: [], lastExportDate: null, lastWordExportDate: null,
   perfectStreak: 0, redemptionDone: false,
   qcmSessionCount: 0, lastLearningDate: null,
-  masteredSnapshots: [], // [{date, count}]
+  masteredSnapshots: [],
+  wordsBaseVersion: null,
+  lastWordsExportVersion: null,
 };
 
 /* ─────────────────────────────────────────────────────────────
@@ -51,11 +55,14 @@ const DEFAULT_SETTINGS = {
 ───────────────────────────────────────────────────────────── */
 let db       = null;
 let settings = { ...DEFAULT_SETTINGS };
-let allWords = [];          // cache mémoire
-let pendingRewards = [];    // badges à afficher en fin de session
+let allWords = [];
+let pendingRewards = [];
 
 // État QCM
-let qcmSession = { words:[], idx:0, answers:[], mode:'mot-def', startTime:0, answered:false, history:[] };
+let qcmSession = {
+  words:[], idx:0, answers:[], mode:'mot-def', startTime:0,
+  answered:false, history:[], waitingSwipe:false
+};
 
 // État Apprentissage
 let learnSession = {
@@ -63,17 +70,18 @@ let learnSession = {
   results:[], hintUsed:[], qcmHintUsed:[],
   scrolledAll:false,
   perfectSoFar:true, usedQcmHint:false,
-  startTimes:[],
+  startTimes:[], waitingSwipe:false,
 };
 
 // Navigation
-let currentScreen = 'home';
-let wordFormMode  = 'create'; // 'create' | 'edit'
-let editingWordId = null;
-let swipedRowId   = null;
+let currentScreen  = 'home';
+let wordFormMode   = 'create';
+let editingWordId  = null;
+let swipedRowId    = null;
+let wordsFromReview = false; // flag: arrivée depuis "à revoir"
 
 // Recherche / filtres
-let searchMode   = 'mot';    // 'mot' | 'definition' | 'theme'
+let searchMode   = 'mot';
 let activeFilter = 'all';
 let activeFilters = new Set(['all']);
 let searchQuery  = '';
@@ -167,10 +175,17 @@ async function saveSettings() {
 async function loadWords() {
   allWords = await dbGetAll('words');
   if (allWords.length === 0) {
-    // Premier lancement : charger words.json
     try {
       const resp = await fetch('words.json');
-      const data = await resp.json();
+      const raw  = await resp.json();
+      // Extraire le sentinel de version si présent
+      const sentinel = raw.find(item => item.__lexis_version__);
+      if (sentinel) {
+        const ver = sentinel.__lexis_version__;
+        settings.wordsBaseVersion = ver;
+        await saveSetting('wordsBaseVersion', ver);
+      }
+      const data = raw.filter(item => !item.__lexis_version__);
       await dbPutAll('words', data);
       allWords = data;
     } catch(e) {
@@ -252,29 +267,62 @@ function natureBadgeHtml(natureArr) {
   return natureArr.map(n => `<span class="badge ${natureBadgeClass([n])}">${n}</span>`).join(' ');
 }
 
+/* ── Première syllabe ── */
+function firstSyllable(word) {
+  if (!word) return '';
+  const w = word.toLowerCase();
+  // Voyelles
+  const V = 'aeéèêëiîïoôuùûüy';
+  // Chercher la fin de la première syllabe : consonne(s) + voyelle(s) + consonne(s) suivie d'une voyelle
+  let i = 0;
+  // Passer les consonnes initiales
+  while (i < w.length && !V.includes(w[i])) i++;
+  // Passer les voyelles
+  while (i < w.length && V.includes(w[i])) i++;
+  // Passer jusqu'à la prochaine voyelle (fin de syllabe)
+  const peak = i;
+  // Si on est à la fin ou presque, retourner au moins 2 chars
+  if (peak <= 1) return word.slice(0, Math.min(2, word.length));
+  return word.slice(0, peak);
+}
+
 /* ─────────────────────────────────────────────────────────────
    AUDIO
 ───────────────────────────────────────────────────────────── */
 const AudioCtx = window.AudioContext || window.webkitAudioContext;
-let audioCtx = null;
+let audioCtx   = null;
+let gainMaster = null;
 
 function getAudioCtx() {
-  if (!audioCtx) audioCtx = new AudioCtx();
+  if (!audioCtx) {
+    audioCtx   = new AudioCtx();
+    gainMaster = audioCtx.createGain();
+    gainMaster.connect(audioCtx.destination);
+    gainMaster.gain.value = settings.soundVolume !== undefined ? settings.soundVolume : 0.5;
+  }
   return audioCtx;
 }
 
+function setMasterVolume(v) {
+  if (gainMaster) gainMaster.gain.value = v;
+}
+
 function playTone(type) {
+  // Sons désactivés en QCM et Apprentissage selon les réglages
   if (type === 'correct' && !settings.soundCorrect) return;
   if (type === 'wrong'   && !settings.soundWrong)   return;
   if (type === 'reward'  && !settings.soundRewards)  return;
 
   try {
-    const c = getAudioCtx();
+    const c   = getAudioCtx();
+    const vol = settings.soundVolume !== undefined ? settings.soundVolume : 0.5;
+    if (gainMaster) gainMaster.gain.value = vol;
+
+    const dest = gainMaster || c.destination;
 
     if (type === 'correct') {
-      // B — Une note ronde (sol)
       const o = c.createOscillator(), g = c.createGain();
-      o.connect(g); g.connect(c.destination);
+      o.connect(g); g.connect(dest);
       o.type = 'sine'; o.frequency.value = 784;
       g.gain.setValueAtTime(0, c.currentTime);
       g.gain.linearRampToValueAtTime(0.16, c.currentTime + 0.015);
@@ -282,10 +330,9 @@ function playTone(type) {
       o.start(c.currentTime); o.stop(c.currentTime + 0.37);
 
     } else if (type === 'wrong') {
-      // B — Deux notes tombantes (mi → do)
       [[330, 0], [262, 0.16]].forEach(([freq, t]) => {
         const o = c.createOscillator(), g = c.createGain();
-        o.connect(g); g.connect(c.destination);
+        o.connect(g); g.connect(dest);
         o.type = 'sine'; o.frequency.value = freq;
         g.gain.setValueAtTime(0, c.currentTime + t);
         g.gain.linearRampToValueAtTime(0.14, c.currentTime + t + 0.015);
@@ -294,11 +341,10 @@ function playTone(type) {
       });
 
     } else if (type === 'reward') {
-      // E — Arpège ascendant 3 notes scintillantes
       [523, 659, 784, 1047].forEach((freq, i) => {
         const t = i * 0.1;
         const o = c.createOscillator(), g = c.createGain();
-        o.connect(g); g.connect(c.destination);
+        o.connect(g); g.connect(dest);
         o.type = 'sine'; o.frequency.value = freq;
         g.gain.setValueAtTime(0, c.currentTime + t);
         g.gain.linearRampToValueAtTime(0.13, c.currentTime + t + 0.015);
@@ -306,7 +352,7 @@ function playTone(type) {
         o.start(c.currentTime + t); o.stop(c.currentTime + t + 0.33);
         if (i > 1) {
           const o2 = c.createOscillator(), g2 = c.createGain();
-          o2.connect(g2); g2.connect(c.destination);
+          o2.connect(g2); g2.connect(dest);
           o2.type = 'triangle'; o2.frequency.value = freq;
           g2.gain.setValueAtTime(0, c.currentTime + t);
           g2.gain.linearRampToValueAtTime(0.05, c.currentTime + t + 0.015);
@@ -372,14 +418,41 @@ function closeModal(id) {
 }
 
 /* ─────────────────────────────────────────────────────────────
+   SWIPE BAS → ACCUEIL (global)
+───────────────────────────────────────────────────────────── */
+function initGlobalSwipeDown() {
+  let sy = 0, sx = 0, active = false;
+
+  document.addEventListener('touchstart', e => {
+    sy = e.touches[0].clientY;
+    sx = e.touches[0].clientX;
+    active = true;
+  }, { passive: true });
+
+  document.addEventListener('touchend', e => {
+    if (!active) return;
+    active = false;
+    const dy = e.changedTouches[0].clientY - sy;
+    const dx = Math.abs(e.changedTouches[0].clientX - sx);
+    // Swipe vers le bas rapide (>80px), principalement vertical
+    if (dy > 80 && dx < 60) {
+      // Ne pas déclencher si on est sur un champ de saisie ou modal ouverte
+      const focused = document.activeElement;
+      if (focused && (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA')) return;
+      const modalOpen = document.querySelector('.modal-overlay.show');
+      if (modalOpen) return;
+      if (currentScreen !== 'home') navigateTo('home');
+    }
+  }, { passive: true });
+}
+
+/* ─────────────────────────────────────────────────────────────
    NAVIGATION
 ───────────────────────────────────────────────────────────── */
-function navigateTo(screen) {
-  // Masquer nav pour QCM et apprentissage
+function navigateTo(screen, opts = {}) {
   const hiddenNav = ['qcm','learn'];
   document.getElementById('bottom-nav').style.display = hiddenNav.includes(screen) ? 'none' : '';
 
-  // Désactiver tous les écrans
   document.querySelectorAll('.screen, #screen-qcm, #screen-learn').forEach(s => {
     s.classList.remove('active');
     s.style.display = '';
@@ -394,7 +467,6 @@ function navigateTo(screen) {
   } else {
     const el = document.getElementById(`screen-${screen}`);
     if (el) el.classList.add('active');
-    // Màj nav
     document.querySelectorAll('.nav-item').forEach(ni => {
       ni.classList.toggle('active', ni.dataset.screen === screen);
     });
@@ -402,9 +474,19 @@ function navigateTo(screen) {
 
   currentScreen = screen;
 
-  // Refresh des écrans
   if (screen === 'home')     refreshHome();
-  if (screen === 'words')    refreshWordList();
+  if (screen === 'words') {
+    // Filtre "tous" par défaut sauf si redirigé depuis "à revoir"
+    if (!wordsFromReview) {
+      activeFilters = new Set(['all']);
+      document.querySelectorAll('.filter-pill').forEach(p => {
+        p.classList.toggle('active', p.dataset.filter === 'all');
+      });
+    } else {
+      wordsFromReview = false; // consommer le flag
+    }
+    refreshWordList();
+  }
   if (screen === 'stats')    refreshStats();
   if (screen === 'settings') refreshSettings();
 }
@@ -421,10 +503,8 @@ function refreshHome() {
   document.getElementById('home-mastered').textContent = mastered.length.toLocaleString('fr');
   document.getElementById('home-review').textContent   = review.length.toLocaleString('fr');
 
-  // Taux réussite 30 jours (depuis les sessions)
   refreshSuccessRate();
 
-  // Streak pill
   const n = settings.currentStreak || 0;
   const isLexicologue = settings.badges && settings.badges.includes('m_100');
   document.getElementById('streak-n').textContent  = n;
@@ -432,10 +512,7 @@ function refreshHome() {
   const j = settings.jokers || 0;
   document.getElementById('streak-shield').textContent = j > 0 ? `🛡×${j}` : '';
 
-  // Hero
   const today = new Date();
-  const day   = today.getDay();
-  const isValidDay = (settings.validDays || [1,2,3,4,5]).includes(day);
   const done  = settings.lastLearningDate === todayStr();
   const total = settings.wordsPerSession || 12;
 
@@ -452,9 +529,6 @@ function refreshHome() {
   document.getElementById('hero-foot-right').textContent = labels.length === 5 && JSON.stringify(validDays) === JSON.stringify([1,2,3,4,5])
     ? 'Lun – Ven'
     : labels.join(', ');
-
-  // Joker banner
-  // (géré séparément dans checkStreak)
 }
 
 async function refreshSuccessRate() {
@@ -478,7 +552,6 @@ function todayStr() {
    SÉRIE & JOKERS
 ───────────────────────────────────────────────────────────── */
 async function checkAndUpdateStreak(sessionDate) {
-  // sessionDate = 'YYYY-MM-DD'
   const last = settings.lastLearningDate;
   let streak = settings.currentStreak || 0;
   let longest= settings.longestStreak || 0;
@@ -487,11 +560,10 @@ async function checkAndUpdateStreak(sessionDate) {
     streak = 1;
   } else {
     const diff = daysDiff(last, sessionDate);
-    if (diff === 0) return; // même jour, déjà compté
+    if (diff === 0) return;
     if (diff === 1) {
       streak++;
     } else {
-      // Rupture — essayer jokers
       const jokers = settings.jokers || 0;
       if (jokers >= 2) {
         settings.jokers = jokers - 2;
@@ -499,7 +571,6 @@ async function checkAndUpdateStreak(sessionDate) {
         showJokerBanner('2 jokers ont été utilisés pour préserver votre série.');
       } else if (jokers === 1) {
         settings.jokers = 0;
-        // 1 joker insuffisant si diff > 1
         streak = 1;
         showJokerBanner('Vous n\'avez pas suffisamment de jokers pour préserver votre série.');
       } else {
@@ -514,16 +585,13 @@ async function checkAndUpdateStreak(sessionDate) {
   settings.longestStreak   = longest;
   settings.lastLearningDate= sessionDate;
 
-  // Gagner jokers par tranche de 15 jours
   const prevStreak = (last ? (settings.currentStreak - 1) : 0);
   const newJokerFromStreak = Math.floor(streak/15) - Math.floor(prevStreak/15);
   if (newJokerFromStreak > 0) {
     settings.jokers = Math.min(5, (settings.jokers||0) + newJokerFromStreak);
   }
 
-  // Vérifier badges série
   await checkSerieBadges(streak);
-
   await saveSettings();
   refreshHome();
 }
@@ -545,9 +613,7 @@ async function checkSerieBadges(streak) {
     if (streak >= b.days && !badges.includes(b.id)) {
       badges.push(b.id);
       settings.badges = badges;
-      if (b.joker) {
-        settings.jokers = Math.min(5, (settings.jokers||0) + 1);
-      }
+      if (b.joker) settings.jokers = Math.min(5, (settings.jokers||0) + 1);
       pendingRewards.push(b);
     }
   }
@@ -566,11 +632,7 @@ async function checkMaitriseBadges() {
       settings.badges = badges;
       newBadge = b;
       pendingRewards.push(b);
-
-      // Lexicologue : 100%
-      if (b.id === 'm_100') {
-        pendingRewards.push({ special: 'lexicologue' });
-      }
+      if (b.id === 'm_100') pendingRewards.push({ special: 'lexicologue' });
     }
   }
   if (newBadge) await saveSettings();
@@ -600,14 +662,12 @@ function openFlamePopup() {
   document.getElementById('popup-best').textContent  = longest;
   document.getElementById('popup-jokers').textContent= `🛡 Jokers disponibles : ${jokers} / 5`;
 
-  // Prochain joker série
   const next = 15 - (streak % 15);
   const nextFromSerie = next === 15 ? 15 : next;
   const nextFromQcm   = 60 - ((settings.qcmSessionCount||0) % 60);
   document.getElementById('popup-next-joker').textContent =
     `Prochain joker : +${nextFromSerie} jours de série ou ${nextFromQcm} sessions QCM`;
 
-  // Badges
   const allBadges = [...BADGES_SERIE, ...BADGES_MAITRISE, ...BADGES_MOTIV];
   const active = activeWords().length;
   const mastered = masteredWords().length;
@@ -637,7 +697,7 @@ function openFlamePopup() {
    LISTE DE MOTS — AFFICHAGE
 ───────────────────────────────────────────────────────────── */
 function refreshWordList() {
-  const q  = searchQuery.toLowerCase();
+  const q        = searchQuery.toLowerCase();
   const archived = activeFilters.has('archived');
 
   let filtered = allWords.filter(w => {
@@ -646,7 +706,6 @@ function refreshWordList() {
     return true;
   });
 
-  // Filtres nature/statut
   if (!activeFilters.has('all') && !activeFilters.has('archived')) {
     filtered = filtered.filter(w => {
       return [...activeFilters].every(f => {
@@ -663,7 +722,6 @@ function refreshWordList() {
     });
   }
 
-  // Recherche
   if (q) {
     filtered = filtered.filter(w => {
       if (searchMode === 'mot')        return w.mot.toLowerCase().includes(q);
@@ -673,10 +731,8 @@ function refreshWordList() {
     });
   }
 
-  // Tri alphabétique
   filtered.sort((a,b) => a.mot.localeCompare(b.mot, 'fr'));
 
-  // Compter mots actifs
   const countActive = allWords.filter(w => !w.isArchived).length;
   document.getElementById('words-count').textContent = `${countActive.toLocaleString('fr')} mots`;
 
@@ -709,7 +765,7 @@ function renderWordList(words) {
         ${dot}
       </div>
       <div class="word-detail">
-        <div class="detail-def">${w.definition||''}</div>
+        <div class="detail-def"><strong>${w.definition||''}</strong></div>
         ${noteHtml}
         <div class="detail-themes">${themeHtml}</div>
       </div>
@@ -724,7 +780,6 @@ function renderWordList(words) {
     </div>`;
   }).join('');
 
-  // Events
   list.querySelectorAll('.word-main').forEach(el => {
     el.addEventListener('click', () => toggleWordRow(el.dataset.id));
   });
@@ -735,20 +790,23 @@ function renderWordList(words) {
     el.addEventListener('click', e => { e.stopPropagation(); toggleArchive(el.dataset.id); });
   });
 
-  // Swipe
   initSwipe(list);
 }
 
 function toggleWordRow(id) {
-  // Fermer toute ligne ouverte
+  // Fermer swipe si ouvert — et si le mot swipé est le même, ne pas ouvrir
+  if (swipedRowId === id) {
+    closeSwipe(swipedRowId);
+    return;
+  }
+  if (swipedRowId) closeSwipe(swipedRowId);
+
   document.querySelectorAll('.word-row.expanded').forEach(r => {
     if (r.id !== `wrow-${id}`) {
       r.classList.remove('expanded');
       r.querySelector('.word-main').style.transform = '';
     }
   });
-  // Refermer swipe si ouvert
-  if (swipedRowId && swipedRowId !== id) closeSwipe(swipedRowId);
 
   const row = document.getElementById(`wrow-${id}`);
   if (row) row.classList.toggle('expanded');
@@ -784,6 +842,11 @@ function initSwipe(container) {
     const dx = e.changedTouches[0].clientX - startX;
     const main = document.querySelector(`#wrow-${currentId} .word-main`);
     if (dx < -40) {
+      // Fermer l'expansion si le mot est développé
+      const row = document.getElementById(`wrow-${currentId}`);
+      if (row && row.classList.contains('expanded')) {
+        row.classList.remove('expanded');
+      }
       if (swipedRowId && swipedRowId !== currentId) closeSwipe(swipedRowId);
       swipedRowId = currentId;
       if (main) main.style.transform = 'translateX(-96px)';
@@ -793,7 +856,6 @@ function initSwipe(container) {
     currentId = null;
   });
 
-  // Clic hors ferme le swipe
   document.addEventListener('click', e => {
     if (swipedRowId && !e.target.closest(`#wrow-${swipedRowId}`)) {
       closeSwipe(swipedRowId);
@@ -811,9 +873,7 @@ async function toggleArchive(id) {
   const w = allWords.find(x => x.id === id);
   if (!w) return;
   w.isArchived = !w.isArchived;
-  if (w.isArchived) {
-    // Archivé : aucun changement de statut
-  } else {
+  if (!w.isArchived) {
     w.status = 'nouveau';
     w.consecutiveCorrect = 0;
   }
@@ -828,6 +888,9 @@ async function toggleArchive(id) {
 let formThemes = [];
 let selectedNatures = new Set();
 
+// Thèmes exclus du formulaire de création/édition
+const THEMES_SYSTEM = ['à_revoir','maîtrisé','ajouté','archivé'];
+
 function openWordForm(id = null) {
   wordFormMode  = id ? 'edit' : 'create';
   editingWordId = id;
@@ -841,7 +904,6 @@ function openWordForm(id = null) {
   document.getElementById('dyn-list').style.display = 'none';
   document.getElementById('dyn-list').innerHTML = '';
 
-  // Réinitialiser natures
   document.querySelectorAll('.nat-btn').forEach(b => b.classList.remove('sel'));
 
   if (id) {
@@ -850,7 +912,7 @@ function openWordForm(id = null) {
       document.getElementById('form-mot').value  = w.mot;
       document.getElementById('form-def').value  = w.definition || '';
       document.getElementById('form-note').value = w.noteVariante || '';
-      formThemes = [...(w.themes || [])];
+      formThemes = [...(w.themes || [])].filter(t => !THEMES_SYSTEM.includes(t));
       selectedNatures = new Set(w.nature || []);
       selectedNatures.forEach(n => {
         const btn = document.querySelector(`.nat-btn[data-nat="${n}"]`);
@@ -862,10 +924,8 @@ function openWordForm(id = null) {
   renderFormThemes();
   updateFormSaveBtn();
 
-  // Fermer swipe éventuel
   if (swipedRowId) closeSwipe(swipedRowId);
 
-  // Afficher formulaire
   const wordList = document.querySelector('#screen-words .scroll');
   if (wordList) wordList.style.display = 'none';
   document.getElementById('word-form').classList.add('active');
@@ -903,7 +963,6 @@ function updateFormSaveBtn() {
   const mot = document.getElementById('form-mot').value.trim();
   const def = document.getElementById('form-def').value.trim();
 
-  // Vérifier doublon exact (sauf si édition du même mot)
   const existing = allWords.find(w =>
     !w.isArchived &&
     w.mot.toLowerCase() === mot.toLowerCase() &&
@@ -914,7 +973,6 @@ function updateFormSaveBtn() {
   document.getElementById('form-save-btn').disabled = !valid;
 }
 
-/* Suggestions dynamiques */
 function updateDynList(query) {
   if (!query || query.length < 2) {
     document.getElementById('dyn-list').style.display = 'none';
@@ -994,7 +1052,6 @@ async function saveWordForm() {
 }
 
 function markWordsModified() {
-  // Si lastWordExportDate existait, le mettre à null pour signaler modification
   settings._wordsModified = true;
   saveSetting('_wordsModified', true);
   refreshWordsModifiedMsg();
@@ -1023,7 +1080,9 @@ function openThemePicker() {
 
 function renderThemesGrid(filter) {
   const grid = document.getElementById('themes-grid');
-  grid.innerHTML = THEMES_ALL.map(t => {
+  // Exclure les thèmes système
+  const displayThemes = THEMES_ALL.filter(t => !THEMES_SYSTEM.includes(t));
+  grid.innerHTML = displayThemes.map(t => {
     const disabled = formThemes.includes(t);
     const sel = t === pickerSelected;
     if (filter && !t.includes(filter.toLowerCase())) return '';
@@ -1039,11 +1098,33 @@ function renderThemesGrid(filter) {
 }
 
 /* ─────────────────────────────────────────────────────────────
-   QCM
+   QCM — même nature dans les choix
+───────────────────────────────────────────────────────────── */
+function buildQcmChoices(correct, inversed) {
+  const pool = activeWords().filter(w => w.id !== correct.id);
+  const n    = (settings.qcmChoicesCount || 4) - 1;
+
+  // Priorité : mots de même nature principale
+  const mainNature = correct.nature && correct.nature[0];
+  const sameNature = mainNature
+    ? pool.filter(w => w.nature && w.nature.includes(mainNature))
+    : [];
+  const others = pool.filter(w => !sameNature.find(s => s.id === w.id));
+
+  let distractors = shuffleArray(sameNature).slice(0, n);
+  if (distractors.length < n) {
+    distractors = [...distractors, ...shuffleArray(others).slice(0, n - distractors.length)];
+  }
+
+  return shuffleArray([correct, ...distractors]);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   QCM — SESSION
 ───────────────────────────────────────────────────────────── */
 function startQcm() {
-  const pool   = activeWords();
-  const total  = Math.min(settings.qcmWordsPerSession || 10, pool.length);
+  const pool    = activeWords();
+  const total   = Math.min(settings.qcmWordsPerSession || 10, pool.length);
   const shuffled = shuffleArray([...pool]).slice(0, total);
 
   qcmSession = {
@@ -1056,12 +1137,14 @@ function startQcm() {
     history: [],
     questionTimes: [],
     qStart: Date.now(),
+    waitingSwipe: false,
   };
 
   navigateTo('qcm');
   document.getElementById('qcm-results').style.display = 'none';
   document.getElementById('qcm-question').style.display = '';
   renderQcmQuestion();
+  initQcmSwipe();
 }
 
 function renderQcmQuestion() {
@@ -1070,26 +1153,22 @@ function renderQcmQuestion() {
   const tot = s.words.length;
   const inversed = s.mode === 'def-mot';
 
-  // Header
   document.getElementById('qcm-counter').textContent = `${s.idx+1} / ${tot}`;
   document.getElementById('qcm-progress').style.width = `${(s.idx/tot)*100}%`;
 
-  // Bouton mode
   const modeBtn = document.getElementById('qcm-mode-btn');
   modeBtn.className = `mode-btn${inversed?' inversed':''}`;
 
-  // Mode tag
   document.getElementById('qcm-mode-tag').textContent = inversed
     ? 'Quel mot correspond à cette définition…'
     : 'Quelle est la définition de…';
 
-  // Question card
   if (inversed) {
     document.getElementById('qcm-q-label').textContent = 'Définition';
     document.getElementById('qcm-q-word').style.display = 'none';
     document.getElementById('qcm-q-badge').style.display = 'none';
     document.getElementById('qcm-q-def').style.display  = '';
-    document.getElementById('qcm-q-def').textContent    = w.definition;
+    document.getElementById('qcm-q-def').innerHTML = `<strong>${w.definition}</strong>`;
   } else {
     document.getElementById('qcm-q-label').textContent = 'Mot';
     document.getElementById('qcm-q-word').style.display = '';
@@ -1099,11 +1178,10 @@ function renderQcmQuestion() {
     document.getElementById('qcm-q-def').style.display  = 'none';
   }
 
-  // Choix
   const choices = buildQcmChoices(w, inversed);
   const container = document.getElementById('qcm-choices');
   container.innerHTML = choices.map(c => {
-    const text = inversed ? c.mot : c.definition;
+    const text = inversed ? c.mot : `<strong>${c.definition}</strong>`;
     return `<button class="choice" data-id="${c.id}">${text}</button>`;
   }).join('');
 
@@ -1111,15 +1189,9 @@ function renderQcmQuestion() {
     btn.addEventListener('click', () => handleQcmAnswer(btn, w, inversed));
   });
 
-  s.answered = false;
-  s.qStart   = Date.now();
-}
-
-function buildQcmChoices(correct, inversed) {
-  const pool = activeWords().filter(w => w.id !== correct.id);
-  const n    = (settings.qcmChoicesCount || 4) - 1;
-  const distractors = shuffleArray(pool).slice(0, n);
-  return shuffleArray([correct, ...distractors]);
+  s.answered     = false;
+  s.waitingSwipe = false;
+  s.qStart       = Date.now();
 }
 
 function handleQcmAnswer(btn, word, inversed) {
@@ -1132,16 +1204,13 @@ function handleQcmAnswer(btn, word, inversed) {
   const chosenId = btn.dataset.id;
   const correct  = chosenId === word.id;
 
-  // Feedback visuel
   document.querySelectorAll('#qcm-choices .choice').forEach(b => {
     b.disabled = true;
     if (b.dataset.id === word.id) b.classList.add('correct');
     else if (b === btn && !correct) b.classList.add('wrong');
   });
 
-  // Corriger le mot
   if (correct) {
-    b => {}; // rien de spécial ici
     playTone('correct');
   } else {
     playTone('wrong');
@@ -1149,8 +1218,81 @@ function handleQcmAnswer(btn, word, inversed) {
 
   qcmSession.answers.push({ wordId: word.id, correct, elapsed });
 
-  // Avancer auto après délai
-  setTimeout(advanceQcm, correct ? 900 : 1600);
+  if (correct) {
+    // Bonne réponse : avance automatiquement
+    setTimeout(advanceQcm, 900);
+  } else {
+    // Mauvaise réponse : attendre swipe gauche
+    qcmSession.waitingSwipe = true;
+  }
+}
+
+function initQcmSwipe() {
+  const screen = document.getElementById('screen-qcm');
+  let sx = 0;
+
+  screen.addEventListener('touchstart', e => {
+    sx = e.touches[0].clientX;
+  }, { passive: true });
+
+  screen.addEventListener('touchend', e => {
+    const dx = e.changedTouches[0].clientX - sx;
+    // Swipe gauche : avancer si erreur en attente
+    if (dx < -60 && qcmSession.waitingSwipe) {
+      qcmSession.waitingSwipe = false;
+      advanceQcm();
+      return;
+    }
+    // Swipe droit : revenir à la question précédente (lecture seule)
+    if (dx > 60 && qcmSession.idx > 0 && !qcmSession.waitingSwipe && !qcmSession.answered) {
+      showQcmPrevious();
+    }
+  }, { passive: true });
+}
+
+function showQcmPrevious() {
+  const s = qcmSession;
+  if (s.idx === 0) return;
+  const prevIdx = s.idx - 1;
+  const prevWord = s.words[prevIdx];
+  const prevAns  = s.answers[prevIdx];
+  if (!prevAns) return;
+
+  const inversed = s.mode === 'def-mot';
+
+  // Afficher la question précédente en lecture seule
+  document.getElementById('qcm-counter').textContent = `${prevIdx+1} / ${s.words.length} — déjà répondu`;
+
+  if (inversed) {
+    document.getElementById('qcm-q-label').textContent = 'Définition';
+    document.getElementById('qcm-q-word').style.display = 'none';
+    document.getElementById('qcm-q-badge').style.display = 'none';
+    document.getElementById('qcm-q-def').style.display  = '';
+    document.getElementById('qcm-q-def').innerHTML = `<strong>${prevWord.definition}</strong>`;
+  } else {
+    document.getElementById('qcm-q-label').textContent = 'Mot';
+    document.getElementById('qcm-q-word').style.display = '';
+    document.getElementById('qcm-q-word').textContent   = prevWord.mot;
+    document.getElementById('qcm-q-badge').style.display= '';
+    document.getElementById('qcm-q-badge').innerHTML    = natureBadgeHtml(prevWord.nature);
+    document.getElementById('qcm-q-def').style.display  = 'none';
+  }
+
+  // Reconstruire les choix avec le résultat affiché
+  const choices = buildQcmChoices(prevWord, inversed);
+  const container = document.getElementById('qcm-choices');
+  container.innerHTML = choices.map(c => {
+    const text = inversed ? c.mot : `<strong>${c.definition}</strong>`;
+    const isCorrect = c.id === prevWord.id;
+    const isChosen  = c.id === prevAns.wordId && !prevAns.correct;
+    const cls = isCorrect ? ' correct' : isChosen ? ' wrong' : '';
+    return `<button class="choice${cls}" data-id="${c.id}" disabled>${text}</button>`;
+  }).join('');
+
+  // Revenir à la question courante après 2s
+  setTimeout(() => {
+    if (qcmSession.idx === s.idx) renderQcmQuestion();
+  }, 2500);
 }
 
 async function advanceQcm() {
@@ -1163,19 +1305,15 @@ async function advanceQcm() {
 }
 
 async function endQcm() {
-  // Màj statuts mots
   for (const ans of qcmSession.answers) {
     const w = allWords.find(x => x.id === ans.wordId);
     if (!w) continue;
-    if (ans.correct) {
-      // QCM : ne modifie pas consecutiveCorrect (pas d'apprentissage profond)
-    } else {
+    if (!ans.correct) {
       w.errorCount = (w.errorCount||0) + 1;
       await updateWord(w);
     }
   }
 
-  // Sauvegarder session
   const correctCount = qcmSession.answers.filter(a => a.correct).length;
   const totalTime    = qcmSession.questionTimes.reduce((a,b)=>a+b,0);
   const avgTime      = qcmSession.questionTimes.length ? Math.round(totalTime/qcmSession.questionTimes.length) : 0;
@@ -1191,10 +1329,7 @@ async function endQcm() {
     streakAtSession: settings.currentStreak,
   };
   await dbPut('sessions', session);
-
   await grantQcmJoker();
-
-  // Afficher résultats
   showQcmResults(correctCount, avgTime);
 }
 
@@ -1211,7 +1346,6 @@ function showQcmResults(correct, avgTime) {
   document.getElementById('res-correct').textContent = correct;
   document.getElementById('res-errors').textContent  = errors;
 
-  // Mots ratés
   const missed = qcmSession.answers.filter(a => !a.correct).map(a => allWords.find(w => w.id === a.wordId)).filter(Boolean);
   const missEl = document.getElementById('qcm-miss-list');
   if (missed.length) {
@@ -1225,7 +1359,6 @@ function showQcmResults(correct, avgTime) {
     missEl.innerHTML = `<div style="font-size:13px;color:var(--text-disabled);text-align:center;padding:8px">Aucun mot raté 🎉</div>`;
   }
 
-  // Gestes
   setupQcmResultGestures();
 }
 
@@ -1244,7 +1377,6 @@ function setupQcmResultGestures() {
 
   results.addEventListener('click', handler);
 
-  // Swipe
   let sx = 0;
   results.addEventListener('touchstart', e => { sx = e.touches[0].clientX; }, { passive:true });
   results.addEventListener('touchend', e => {
@@ -1266,20 +1398,18 @@ function buildLearnPool() {
   const revRatio = (settings.reviewRatioPct || 20) / 100;
   const mastRatio= (settings.masteredRatioPct || 10) / 100;
 
-  let nReview  = Math.round(total * revRatio);
-  let nMastered= Math.round(total * mastRatio);
-  let nFresh   = total - nReview - nMastered;
+  let nReview   = Math.round(total * revRatio);
+  let nMastered = Math.round(total * mastRatio);
+  let nFresh    = total - nReview - nMastered;
 
-  // Adaptation silencieuse
   const actualReview   = Math.min(nReview,   review.length);
   const actualMastered = Math.min(nMastered, mastered.length);
   let   actualFresh    = Math.min(nFresh,    fresh.length);
   const deficit = total - actualReview - actualMastered - actualFresh;
   actualFresh   = Math.min(actualFresh + deficit, fresh.length);
 
-  // Priorité à_revoir : plus ratés + plus anciens
   const sortedReview = [...review]
-    .sort((a,b) => (b.errorCount||0) - (a.errorCount||0) || 
+    .sort((a,b) => (b.errorCount||0) - (a.errorCount||0) ||
       (a.lastSeenDate||'') < (b.lastSeenDate||'') ? -1 : 1)
     .slice(0, actualReview);
 
@@ -1303,6 +1433,7 @@ function startLearn() {
     scrolledAll: false,
     perfectSoFar: true, usedQcmHint: false,
     startTimes: pool.map(() => 0),
+    waitingSwipe: false,
   };
 
   navigateTo('learn');
@@ -1324,22 +1455,24 @@ function startMemoPhase() {
   testerBtn.className = 'tester-btn disabled';
   testerBtn.disabled  = true;
 
-  // Rendre les cartes
   const scroll = document.getElementById('memo-scroll');
   scroll.innerHTML = learnSession.words.map((w, i) => {
     const isAlt      = i % 2 === 1;
     const isReview   = w.status === 'à_revoir';
     const isMastered = w.status === 'maîtrisé';
     let borderClass = isReview ? ' review' : isMastered ? ' mastered' : '';
+    const themeHtml = (w.themes && w.themes.length)
+      ? `<div class="memo-themes">${w.themes.map(t => `<span class="theme-chip">${t}</span>`).join(' ')}</div>`
+      : '';
     return `<div class="memo-card${isAlt?' alt':' plain'}${borderClass}">
       <div class="memo-word">${w.mot}</div>
       ${natureBadgeHtml(w.nature)}
-      <div class="memo-def">${w.definition}</div>
+      <div class="memo-def"><strong>${w.definition}</strong></div>
       ${w.noteVariante ? `<div style="font-size:11px;color:var(--text-tertiary);font-style:italic;margin-top:4px">${w.noteVariante}</div>` : ''}
+      ${themeHtml}
     </div>`;
   }).join('');
 
-  // Détecter fin de scroll
   scroll.addEventListener('scroll', () => {
     const atBottom = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 40;
     if (atBottom && !learnSession.scrolledAll) {
@@ -1349,7 +1482,6 @@ function startMemoPhase() {
     }
   });
 
-  // Si liste courte (pas de scroll nécessaire)
   setTimeout(() => {
     if (scroll.scrollHeight <= scroll.clientHeight + 40) {
       learnSession.scrolledAll = true;
@@ -1369,6 +1501,7 @@ function startRestitutionPhase() {
   document.getElementById('learn-results').classList.remove('active');
   document.getElementById('learn-phase-tag').textContent = 'Restitution';
 
+  initLearnSwipe();
   renderLearnQuestion();
 }
 
@@ -1380,66 +1513,61 @@ function renderLearnQuestion() {
   document.getElementById('learn-counter').textContent = `${s.idx+1} / ${total}`;
   document.getElementById('learn-progress').style.width = `${(s.idx/total)*100}%`;
 
-  // Définition (masquer le mot et variantes proches)
   const maskedDef = maskWord(w.definition, w.mot);
-  document.getElementById('learn-def-text').textContent = maskedDef;
+  document.getElementById('learn-def-text').innerHTML = `<strong>${maskedDef}</strong>`;
 
-  // Reset input
   const input = document.getElementById('answer-input');
   input.value = '';
   input.className = 'answer-input';
   input.disabled  = false;
+  input.style.display = '';
 
-  // Feedback
+  document.getElementById('validate-btn').style.display = '';
+  document.getElementById('validate-btn').disabled = false;
   document.getElementById('feedback-wrong').classList.remove('show');
 
-  // Indices
   const hintLetterBtn = document.getElementById('hint-letter-btn');
   const hintQcmBtn    = document.getElementById('hint-qcm-btn');
   const letterUsed    = s.hintUsed[s.idx] !== null;
   const qcmUsed       = s.qcmHintUsed[s.idx];
 
-  if (w.mot && w.mot.length > 0) {
-    const revealedLen = s.hintUsed[s.idx] || 0;
-    const hint = w.mot.slice(0, revealedLen+1) + '…';
-    hintLetterBtn.textContent = revealedLen > 0 ? w.mot.slice(0, revealedLen) + '…' : 'a…';
-  }
-  hintLetterBtn.className = `hint-pill${letterUsed?' used':''}${qcmUsed?' disabled':''}`;
-  hintLetterBtn.disabled  = qcmUsed;
-  hintQcmBtn.className    = `hint-pill${qcmUsed?' used':''}${letterUsed?' disabled':''}`;
-  hintQcmBtn.disabled     = letterUsed && !qcmUsed;
+  // Indice syllabe : n'afficher que si pas encore utilisé
+  const syl = firstSyllable(w.mot);
+  hintLetterBtn.textContent = letterUsed ? (syl + '…') : (syl + '…');
+  hintLetterBtn.className   = `hint-pill${letterUsed?' used':''}${qcmUsed?' disabled':''}`;
+  hintLetterBtn.disabled    = qcmUsed || letterUsed; // usage unique
 
-  // QCM inline
-  document.getElementById('qcm-inline').classList.remove('active');
+  hintQcmBtn.className = `hint-pill${qcmUsed?' used':''}${letterUsed?' disabled':''}`;
+  hintQcmBtn.disabled  = letterUsed && !qcmUsed;
 
-  // Validate btn
-  document.getElementById('validate-btn').disabled = false;
+  // QCM inline (hors-ligne)
+  const inline = document.getElementById('qcm-inline');
+  inline.classList.remove('active');
+  inline.style.order = ''; // reset position
 
-  // Focus
+  s.waitingSwipe = false;
+
   if (!qcmUsed) setTimeout(() => input.focus(), 100);
-
   s.startTimes[s.idx] = Date.now();
 }
 
 function handleHintLetter() {
   const s = learnSession;
   const w = s.words[s.idx];
-  if (s.qcmHintUsed[s.idx]) return;
+  if (s.qcmHintUsed[s.idx] || s.hintUsed[s.idx] !== null) return; // usage unique
 
-  const revealed = s.hintUsed[s.idx] === null ? 0 : s.hintUsed[s.idx];
-  const newRevealed = revealed + 1;
-  s.hintUsed[s.idx] = newRevealed;
+  s.hintUsed[s.idx] = true;
 
-  // Pré-saisir les lettres
+  const syl = firstSyllable(w.mot);
   const input = document.getElementById('answer-input');
-  input.value = w.mot.slice(0, newRevealed);
+  input.value = syl;
   input.focus();
 
   const hintLetterBtn = document.getElementById('hint-letter-btn');
-  hintLetterBtn.textContent = w.mot.slice(0, newRevealed) + '…';
+  hintLetterBtn.textContent = syl + '…';
   hintLetterBtn.className = 'hint-pill used';
+  hintLetterBtn.disabled  = true;
 
-  // Griser QCM
   document.getElementById('hint-qcm-btn').className = 'hint-pill disabled';
   document.getElementById('hint-qcm-btn').disabled  = true;
 }
@@ -1447,7 +1575,7 @@ function handleHintLetter() {
 function handleHintQcm() {
   const s = learnSession;
   const w = s.words[s.idx];
-  if (s.hintUsed[s.idx] !== null) return;
+  if (s.hintUsed[s.idx] !== null || s.qcmHintUsed[s.idx]) return;
 
   s.qcmHintUsed[s.idx] = true;
   s.usedQcmHint = true;
@@ -1457,17 +1585,19 @@ function handleHintQcm() {
   document.getElementById('hint-letter-btn').disabled  = true;
   document.getElementById('hint-qcm-btn').className    = 'hint-pill used';
 
-  // Masquer input
   document.getElementById('answer-input').style.display = 'none';
   document.getElementById('validate-btn').style.display = 'none';
 
-  // Afficher QCM inline
-  const pool    = buildQcmChoices(w, false);
-  const inline  = document.getElementById('qcm-inline');
+  // QCM inline en haut de l'écran
+  const pool   = buildQcmChoices(w, false);
+  const inline = document.getElementById('qcm-inline');
+
   inline.innerHTML = pool.map(c =>
     `<button class="qcm-choice" data-id="${c.id}" data-mot="${c.mot}">${c.mot}</button>`
   ).join('');
   inline.classList.add('active');
+  // Positionner en haut
+  inline.style.order = '-1';
 
   inline.querySelectorAll('.qcm-choice').forEach(btn => {
     btn.addEventListener('click', () => handleInlineQcmAnswer(btn, w));
@@ -1483,9 +1613,8 @@ function handleInlineQcmAnswer(btn, word) {
   });
 
   if (correct) playTone('correct');
-  else { playTone('wrong'); }
+  else         playTone('wrong');
 
-  // Marquer comme "à surveiller" — mais bonne réponse quand même grâce au QCM
   learnSession.results.push({ wordId: word.id, correct: true, hint: 'qcm' });
   setTimeout(advanceLearn, 1200);
 }
@@ -1498,8 +1627,7 @@ function handleAnswerValidate() {
 
   if (!val) return;
 
-  const correct = val === mot || levenshtein(val, mot) <= 1; // tolérance typo légère
-
+  const correct = val === mot || levenshtein(val, mot) <= 1;
   const elapsed = Math.round((Date.now() - s.startTimes[s.idx]) / 1000);
 
   if (correct) {
@@ -1520,8 +1648,30 @@ function handleAnswerValidate() {
     document.getElementById('answer-input').disabled  = true;
     document.getElementById('validate-btn').disabled  = true;
     s.results.push({ wordId: w.id, correct: false, elapsed, hint: s.hintUsed[s.idx] !== null ? 'letter' : null });
-    setTimeout(advanceLearn, 1800);
+    // Attendre swipe gauche
+    s.waitingSwipe = true;
   }
+}
+
+function initLearnSwipe() {
+  const screen = document.getElementById('screen-learn');
+  let sx = 0;
+
+  // Supprimer les anciens listeners pour éviter les doublons
+  screen._learnSwipeTouchStart && screen.removeEventListener('touchstart', screen._learnSwipeTouchStart);
+  screen._learnSwipeTouchEnd   && screen.removeEventListener('touchend',   screen._learnSwipeTouchEnd);
+
+  screen._learnSwipeTouchStart = e => { sx = e.touches[0].clientX; };
+  screen._learnSwipeTouchEnd   = e => {
+    const dx = e.changedTouches[0].clientX - sx;
+    if (dx < -60 && learnSession.waitingSwipe) {
+      learnSession.waitingSwipe = false;
+      advanceLearn();
+    }
+  };
+
+  screen.addEventListener('touchstart', screen._learnSwipeTouchStart, { passive: true });
+  screen.addEventListener('touchend',   screen._learnSwipeTouchEnd,   { passive: true });
 }
 
 async function advanceLearn() {
@@ -1529,7 +1679,6 @@ async function advanceLearn() {
   if (learnSession.idx >= learnSession.words.length) {
     await endLearn();
   } else {
-    // Remettre input visible si QCM inline avait été utilisé sur la question précédente
     document.getElementById('answer-input').style.display = '';
     document.getElementById('validate-btn').style.display = '';
     renderLearnQuestion();
@@ -1537,7 +1686,6 @@ async function advanceLearn() {
 }
 
 async function endLearn() {
-  // Màj statuts
   for (const res of learnSession.results) {
     const w = allWords.find(x => x.id === res.wordId);
     if (!w) continue;
@@ -1554,22 +1702,19 @@ async function endLearn() {
     }
     w.lastSeenDate = todayStr();
 
-    // Badge rédemption
     if (res.correct && w.status === 'maîtrisé' && w.errorCount >= 5 && !settings.redemptionDone) {
       settings.redemptionDone = true;
       pendingRewards.push(BADGES_MOTIV.find(b => b.id === 'redemption'));
       await saveSetting('redemptionDone', true);
-      // Haptique
       if (navigator.vibrate) navigator.vibrate([50,30,100,30,200]);
     }
 
     await updateWord(w);
   }
 
-  // Session parfaite
-  const totalWords  = learnSession.words.length;
-  const correctCount= learnSession.results.filter(r => r.correct).length;
-  const isPerfect   = learnSession.perfectSoFar && !learnSession.usedQcmHint && correctCount === totalWords && totalWords >= 10;
+  const totalWords   = learnSession.words.length;
+  const correctCount = learnSession.results.filter(r => r.correct).length;
+  const isPerfect    = learnSession.perfectSoFar && !learnSession.usedQcmHint && correctCount === totalWords && totalWords >= 10;
 
   if (isPerfect) {
     settings.perfectStreak = (settings.perfectStreak||0) + 1;
@@ -1585,21 +1730,16 @@ async function endLearn() {
     settings.perfectStreak = 0;
   }
 
-  // Màj maîtrise snapshot
-  const snap = { date: todayStr(), count: masteredWords().length };
+  const snap  = { date: todayStr(), count: masteredWords().length };
   const snaps = settings.masteredSnapshots || [];
   const todaySnap = snaps.find(s => s.date === todayStr());
   if (todaySnap) todaySnap.count = snap.count;
   else snaps.push(snap);
   settings.masteredSnapshots = snaps;
 
-  // Badges maîtrise
   await checkMaitriseBadges();
-
-  // Streak
   await checkAndUpdateStreak(todayStr());
 
-  // Sauvegarder session
   const avgTime = learnSession.results.length
     ? Math.round(learnSession.results.filter(r=>r.elapsed).reduce((a,r)=>a+(r.elapsed||0),0) / learnSession.results.length)
     : 0;
@@ -1615,7 +1755,6 @@ async function endLearn() {
     streakAtSession: settings.currentStreak,
   };
   await dbPut('sessions', session);
-
   await saveSettings();
 
   showLearnResults(correctCount, totalWords, avgTime);
@@ -1636,7 +1775,6 @@ function showLearnResults(correct, total, avgTime) {
   document.getElementById('learn-res-correct').textContent = correct;
   document.getElementById('learn-res-errors').textContent  = errors;
 
-  // Mots ratés
   const missed = learnSession.results.filter(r => !r.correct).map(r => allWords.find(w => w.id === r.wordId)).filter(Boolean);
   const missEl = document.getElementById('learn-miss-list');
   if (missed.length) {
@@ -1653,7 +1791,6 @@ function showLearnResults(correct, total, avgTime) {
     missEl.classList.add('hidden');
   }
 
-  // Mots avec indice QCM
   const qcmHinted = learnSession.words.filter((w,i) => learnSession.qcmHintUsed[i]);
   const qcmEl = document.getElementById('learn-qcm-hint-list');
   if (qcmHinted.length) {
@@ -1670,9 +1807,8 @@ function showLearnResults(correct, total, avgTime) {
     qcmEl.classList.add('hidden');
   }
 
-  // Récompenses
   if (pendingRewards.length) {
-    const r = pendingRewards[pendingRewards.length - 1]; // afficher le dernier
+    const r = pendingRewards[pendingRewards.length - 1];
     if (r && !r.special) {
       document.getElementById('learn-reward-banner').classList.remove('hidden');
       document.getElementById('learn-reward-icon').textContent  = r.label ? r.label.split(' ')[0] : '🏅';
@@ -1686,7 +1822,6 @@ function showLearnResults(correct, total, avgTime) {
     document.getElementById('learn-reward-banner').classList.add('hidden');
   }
 
-  // Gestes retour
   setupLearnResultGestures();
 }
 
@@ -1716,15 +1851,12 @@ function setupLearnResultGestures() {
 /* ─────────────────────────────────────────────────────────────
    STATS
 ───────────────────────────────────────────────────────────── */
-let currentCurvePeriod = 'Max';
-
 async function refreshStats() {
   const active   = activeWords();
   const mastered = masteredWords();
   const review   = reviewWords();
   const total    = active.length;
 
-  // Progression globale
   const mPct = total ? mastered.length / total : 0;
   const rPct = total ? review.length / total : 0;
   const vPct = 1 - mPct - rPct;
@@ -1733,25 +1865,24 @@ async function refreshStats() {
   document.getElementById('seg-r').style.flex = Math.round(rPct * 1000);
   document.getElementById('seg-v').style.flex = Math.max(1, Math.round(vPct * 1000));
 
-  document.getElementById('leg-m').textContent = `Maîtrisés ${(mPct*100).toFixed(1)}%`;
-  document.getElementById('leg-r').textContent = `À revoir ${(rPct*100).toFixed(1)}%`;
-  document.getElementById('leg-v').textContent = `À voir ${(vPct*100).toFixed(1)}%`;
-  document.getElementById('curve-pct').textContent = `${(mPct*100).toFixed(1)}%`;
+  // % à 2 décimales sauf 100%
+  const fmt = v => v >= 1 ? '100%' : `${(v*100).toFixed(2)}%`;
+  document.getElementById('leg-m').textContent = `Maîtrisés ${fmt(mPct)}`;
+  document.getElementById('leg-r').textContent = `À revoir ${fmt(rPct)}`;
+  document.getElementById('leg-v').textContent = `À voir ${fmt(vPct)}`;
+  document.getElementById('curve-pct').textContent = fmt(mPct);
 
-  // Courbe
-  drawCurve(currentCurvePeriod);
+  drawCurve();
 
-  // Histogramme
   const sessions = await dbGetAll('sessions');
   drawHisto(sessions);
 
-  // Sessions
   const learnSess = sessions.filter(s => s.mode === 'learn').length;
   const qcmSess   = sessions.filter(s => s.mode === 'qcm').length;
   document.getElementById('stat-sess-learn').textContent = learnSess;
   document.getElementById('stat-sess-qcm').textContent   = qcmSess;
 
-  // Mots les plus ratés
+  // Mots les plus ratés — avec séparateur
   const diffList = [...active]
     .filter(w => w.errorCount > 0)
     .sort((a,b) => (b.errorCount||0) - (a.errorCount||0))
@@ -1759,8 +1890,8 @@ async function refreshStats() {
 
   const diffEl = document.getElementById('diff-words-list');
   if (diffList.length) {
-    diffEl.innerHTML = diffList.map(w =>
-      `<div class="diff-item">
+    diffEl.innerHTML = diffList.map((w, i) =>
+      `<div class="diff-item${i < diffList.length-1 ? ' diff-sep' : ''}">
         <div class="diff-left">
           <span class="diff-word">${w.mot}</span>
           ${natureBadgeHtml(w.nature)}
@@ -1773,22 +1904,12 @@ async function refreshStats() {
   }
 }
 
-function drawCurve(period) {
-  currentCurvePeriod = period;
-
-  // Màj onglets
-  document.querySelectorAll('.ctab').forEach(t => t.classList.toggle('active', t.dataset.period === period));
-
+function drawCurve() {
   const snaps = settings.masteredSnapshots || [];
   if (!snaps.length) return;
 
-  // Filtrer par période
-  const now = new Date();
-  const cutoffMap = { '1S':7, '1M':30, '3M':90, '6M':180, '1A':365, 'Max':99999 };
-  const days  = cutoffMap[period] || 99999;
-  const cutoff= new Date(now - days*86400000);
-  const filtered = snaps.filter(s => new Date(s.date) >= cutoff);
-  if (!filtered.length) filtered.push(...snaps.slice(-2));
+  // Toujours afficher tous les snapshots (période dynamique depuis le début)
+  const filtered = [...snaps].sort((a,b) => a.date.localeCompare(b.date));
 
   const total = activeWords().length || 1;
   const W = 300, H = 70, pad = 4;
@@ -1797,17 +1918,16 @@ function drawCurve(period) {
   const ys = filtered.map(s => H - pad - ((s.count/total) * (H-2*pad)));
 
   if (filtered.length < 2) {
-    // Point unique
     const x = W/2, y = H - pad - ((filtered[0].count/total)*(H-2*pad));
     document.getElementById('curve-fill').setAttribute('d','');
     document.getElementById('curve-line').setAttribute('d','');
     document.getElementById('curve-dot').setAttribute('cx', x);
     document.getElementById('curve-dot').setAttribute('cy', y);
     document.getElementById('curve-dot').style.display = '';
+    document.getElementById('curve-x-labels').innerHTML = '';
     return;
   }
 
-  // Chemin courbe (Catmull-Rom simplifié → lignes)
   let line = `M${xs[0]},${ys[0]}`;
   for (let i=1;i<xs.length;i++) {
     const cpx = (xs[i-1]+xs[i])/2;
@@ -1820,14 +1940,69 @@ function drawCurve(period) {
   document.getElementById('curve-dot').style.display = 'none';
   document.getElementById('curve-vline').style.display = 'none';
 
-  // Labels X
-  const labels = [];
-  if (filtered.length >= 2) {
-    labels.push(fmtDate(filtered[0].date));
-    labels.push(fmtDate(filtered[Math.floor(filtered.length/2)].date));
-    labels.push(fmtDate(filtered[filtered.length-1].date));
-  }
+  // Labels X : début, milieu, fin
+  const labels = [
+    fmtDate(filtered[0].date),
+    fmtDate(filtered[Math.floor(filtered.length/2)].date),
+    fmtDate(filtered[filtered.length-1].date),
+  ];
   document.getElementById('curve-x-labels').innerHTML = labels.map(l=>`<span>${l}</span>`).join('');
+
+  // Touch : afficher date + % au survol
+  initCurveTouch(filtered, xs, ys, total, W, H);
+}
+
+function initCurveTouch(snaps, xs, ys, total, W, H) {
+  const svg      = document.getElementById('curve-svg');
+  const label    = document.getElementById('curve-date');
+  const dot      = document.getElementById('curve-dot');
+  const vline    = document.getElementById('curve-vline');
+
+  svg.addEventListener('touchstart', e => {
+    e.preventDefault();
+    handleCurveTouch(e.touches[0], snaps, xs, ys, total, W, label, dot, vline);
+  }, { passive: false });
+
+  svg.addEventListener('touchmove', e => {
+    e.preventDefault();
+    handleCurveTouch(e.touches[0], snaps, xs, ys, total, W, label, dot, vline);
+  }, { passive: false });
+
+  svg.addEventListener('touchend', () => {
+    label.style.display = 'none';
+    dot.style.display   = 'none';
+    vline.style.display = 'none';
+  }, { passive: true });
+}
+
+function handleCurveTouch(touch, snaps, xs, ys, total, W, label, dot, vline) {
+  const svgEl  = document.getElementById('curve-svg');
+  const rect   = svgEl.getBoundingClientRect();
+  const xRel   = touch.clientX - rect.left;
+  const xSvg   = (xRel / rect.width) * W;
+
+  // Trouver le snap le plus proche
+  let closest = 0;
+  let minDist = Infinity;
+  xs.forEach((x, i) => {
+    const d = Math.abs(x - xSvg);
+    if (d < minDist) { minDist = d; closest = i; }
+  });
+
+  const snap = snaps[closest];
+  const pct  = total ? snap.count / total : 0;
+  const pctStr = pct >= 1 ? '100%' : `${(pct*100).toFixed(2)}%`;
+
+  label.textContent    = `${fmtDate(snap.date)} · ${pctStr}`;
+  label.style.display  = '';
+
+  dot.setAttribute('cx', xs[closest]);
+  dot.setAttribute('cy', ys[closest]);
+  dot.style.display = '';
+
+  vline.setAttribute('x1', xs[closest]);
+  vline.setAttribute('x2', xs[closest]);
+  vline.style.display = '';
 }
 
 function fmtDate(str) {
@@ -1838,23 +2013,26 @@ function fmtDate(str) {
 }
 
 function drawHisto(sessions) {
-  const svg   = document.getElementById('histo-svg');
+  const svg  = document.getElementById('histo-svg');
   const W = 294, H = 110;
-  const barW  = 30, barGap = 12;
-  const barH  = 60; // hauteur max barres
+  const barW = 30, barGap = 12;
+  const barH = 60;
   const statusY = 68, labelY = 84, legendY = 100;
 
-  // 7 derniers jours
-  const today  = new Date();
-  const days7  = Array.from({length:7}, (_,i) => {
-    const d = new Date(today);
-    d.setDate(today.getDate() - 6 + i);
+  // 7 derniers jours — commencer par lundi
+  const today = new Date();
+  // Trouver le lundi de la semaine courante
+  const dayOfWeek = today.getDay(); // 0=dim, 1=lun…
+  const diffToMonday = (dayOfWeek + 6) % 7; // jours depuis lundi
+  const monday = new Date(today);
+  monday.setDate(today.getDate() - diffToMonday);
+
+  const days7 = Array.from({length:7}, (_,i) => {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
     return d.toISOString().slice(0,10);
   });
 
-  const dayLabels = ['L','M','M','J','V','S','D'];
-
-  // Calculer mots par jour
   const learnByDay = {}, qcmByDay = {};
   sessions.forEach(s => {
     const d = s.date.slice(0,10);
@@ -1864,6 +2042,8 @@ function drawHisto(sessions) {
 
   const validDays = settings.validDays || [1,2,3,4,5];
   const maxVal    = Math.max(1, ...days7.map(d => (learnByDay[d]||0) + (qcmByDay[d]||0)));
+
+  const dayLabels = ['L','M','M','J','V','S','D']; // lundi à dimanche
 
   let svgContent = '';
   days7.forEach((dateStr, i) => {
@@ -1875,22 +2055,21 @@ function drawHisto(sessions) {
     const dayOfWeek = date.getDay();
     const isValid   = validDays.includes(dayOfWeek);
     const hasActivity = tot > 0;
+    const isFuture  = dateStr > todayStr();
 
-    // Statut barre
-    let statusColor = '#D8D8D8'; // inactif
-    if (isValid && hasActivity) statusColor = '#B8DFB4'; // accompli
-    if (isValid && !hasActivity) {
-      // rupture si hier ou avant
-      const d = new Date(today);
-      d.setDate(today.getDate() - (6-i));
-      if (d < today) statusColor = '#E8A0A0';
-      if (dateStr === todayStr() && !hasActivity) statusColor = '#B8DFB4'; // aujourd'hui pas encore
+    let statusColor = '#D8D8D8';
+    if (isFuture) {
+      statusColor = '#ECECEC';
+    } else if (isValid && hasActivity) {
+      statusColor = '#B8DFB4';
+    } else if (isValid && !hasActivity && dateStr < todayStr()) {
+      statusColor = '#E8A0A0';
+    } else if (dateStr === todayStr() && !hasActivity) {
+      statusColor = '#B8DFB4';
     }
-    // joker si streak préservé sans activité → difficile à détecter ici, on simplifie
 
     svgContent += `<rect x="${x}" y="${statusY}" width="${barW}" height="4" rx="2" fill="${statusColor}"/>`;
 
-    // Barres
     if (hasActivity) {
       const qH = Math.round((qv/maxVal) * barH);
       const lH = Math.round((lv/maxVal) * barH);
@@ -1900,13 +2079,10 @@ function drawHisto(sessions) {
       if (lH > 0) svgContent += `<rect x="${x}" y="${baseY+qH}" width="${barW}" height="${lH}" rx="3" fill="#B8DFB4"/>`;
     }
 
-    // Label jour
     const lblColor = isValid ? '#bbb' : '#ccc';
-    const dayIdx = ['D','L','M','M','J','V','S'][dayOfWeek];
-    svgContent += `<text x="${x+barW/2}" y="${labelY}" text-anchor="middle" font-size="10" fill="${lblColor}" font-family="sans-serif">${dayIdx}</text>`;
+    svgContent += `<text x="${x+barW/2}" y="${labelY}" text-anchor="middle" font-size="10" fill="${lblColor}" font-family="sans-serif">${dayLabels[i]}</text>`;
   });
 
-  // Légende
   svgContent += `
     <rect x="10"  y="${legendY}" width="10" height="8" rx="2" fill="#B8DFB4"/>
     <text x="24"  y="${legendY+7}" font-size="9" fill="#888" font-family="sans-serif">Apprentissage</text>
@@ -1921,30 +2097,35 @@ function drawHisto(sessions) {
    RÉGLAGES
 ───────────────────────────────────────────────────────────── */
 function refreshSettings() {
-  // Jours
   document.querySelectorAll('.day-btn').forEach(b => {
     const day = parseInt(b.dataset.day);
     const on  = (settings.validDays||[1,2,3,4,5]).includes(day);
     b.className = `day-btn ${on ? 'on' : 'off'}`;
   });
 
-  // Steppers
   document.getElementById('learn-words-val').textContent    = settings.wordsPerSession || 12;
   document.getElementById('review-ratio-val').textContent   = `${settings.reviewRatioPct || 20}%`;
   document.getElementById('mastered-ratio-val').textContent = `${settings.masteredRatioPct || 10}%`;
   document.getElementById('qcm-words-val').textContent      = settings.qcmWordsPerSession || 10;
   document.getElementById('qcm-choices-val').textContent    = settings.qcmChoicesCount || 4;
 
-  // Toggle mode QCM
   const inv = settings.qcmInverseMode || false;
   document.getElementById('qcm-mode-toggle').className = `toggle ${inv ? 'on' : 'off'}`;
   document.getElementById('qcm-mode-sub').textContent  = inv ? 'Définition vers mot' : 'Mot vers définition';
 
-  // Sons
-  refreshSoundBtns();
+  // Volume
+  const vol = settings.soundVolume !== undefined ? settings.soundVolume : 0.5;
+  document.getElementById('volume-slider').value = Math.round(vol * 100);
+  document.getElementById('volume-val').textContent = `${Math.round(vol * 100)}%`;
 
-  // Message liste modifiée
+  refreshSoundBtns();
   refreshWordsModifiedMsg();
+
+  // Version
+  const baseVer = settings.wordsBaseVersion || '—';
+  const expVer  = settings.lastWordsExportVersion || null;
+  document.getElementById('version-line').textContent =
+    `Lexis v1.0 — ${baseVer}${expVer ? ' · export ' + expVer : ''}`;
 }
 
 function refreshSoundBtns() {
@@ -1960,6 +2141,25 @@ function setSound(id, on) {
   btn.innerHTML = on
     ? `<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/></svg>`
     : `<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/></svg>`;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   VERSIONNAGE EXPORT WORDS.JSON
+───────────────────────────────────────────────────────────── */
+function computeNextWordsVersion() {
+  const now   = new Date();
+  const yy    = String(now.getFullYear()).slice(2);
+  const mm    = String(now.getMonth()+1).padStart(2,'0');
+  const prefix = `lexis_v${yy}${mm}-`;
+
+  const current = settings.lastWordsExportVersion || '';
+  if (current.startsWith(prefix)) {
+    // Incrémenter la lettre
+    const letter = current.slice(prefix.length);
+    const nextLetter = String.fromCharCode(letter.charCodeAt(0) + 1);
+    return prefix + nextLetter;
+  }
+  return prefix + 'a';
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -1992,32 +2192,48 @@ async function importProgress(file) {
 }
 
 function exportWords() {
-  const data = allWords.filter(w => !w.isArchived || w.isUserCreated);
-  downloadJson(data, `lexis-mots-${todayStr()}.json`);
+  const version = computeNextWordsVersion();
+  const wordData = allWords.filter(w => !w.isArchived || w.isUserCreated);
+  // Insérer le sentinel de version en première position
+  const sentinel = { __lexis_version__: version };
+  const output   = [sentinel, ...wordData];
+
+  downloadJson(output, 'words.json');
+
+  settings.lastWordsExportVersion = version;
+  saveSetting('lastWordsExportVersion', version);
   saveSetting('lastWordExportDate', todayStr());
   saveSetting('_wordsModified', false);
   settings._wordsModified = false;
   refreshWordsModifiedMsg();
-  showToast('Liste exportée');
+  refreshSettings();
+  showToast(`Liste exportée (${version})`);
 }
 
 async function importWords(file) {
   try {
     const text = await file.text();
-    const data = JSON.parse(text);
-    if (!Array.isArray(data)) throw new Error('Format invalide');
+    const raw  = JSON.parse(text);
+    if (!Array.isArray(raw)) throw new Error('Format invalide');
 
-    // Conserver la progression des mots existants
+    // Extraire version
+    const sentinel = raw.find(item => item.__lexis_version__);
+    if (sentinel) {
+      const ver = sentinel.__lexis_version__;
+      settings.wordsBaseVersion = ver;
+      await saveSetting('wordsBaseVersion', ver);
+    }
+    const data = raw.filter(item => !item.__lexis_version__);
+
+    // Conserver la progression
     const progMap = {};
     allWords.forEach(w => {
       progMap[w.id] = { status: w.status, consecutiveCorrect: w.consecutiveCorrect, errorCount: w.errorCount, lastSeenDate: w.lastSeenDate };
     });
-
     data.forEach(w => {
       if (progMap[w.id]) Object.assign(w, progMap[w.id]);
     });
 
-    // Vider et recharger
     const tx = db.transaction('words', 'readwrite');
     tx.objectStore('words').clear();
     data.forEach(w => tx.objectStore('words').put(w));
@@ -2026,6 +2242,7 @@ async function importWords(file) {
     allWords = data;
     refreshWordList();
     refreshHome();
+    refreshSettings();
     showToast('Liste importée');
   } catch(e) {
     showToast('Erreur : fichier invalide');
@@ -2045,7 +2262,6 @@ function downloadJson(data, filename) {
 }
 
 async function resetProgress() {
-  // Réinitialiser progression de chaque mot
   allWords.forEach(w => {
     w.status = 'nouveau';
     w.consecutiveCorrect = 0;
@@ -2054,12 +2270,10 @@ async function resetProgress() {
   });
   await dbPutAll('words', allWords);
 
-  // Vider sessions
   const tx = db.transaction('sessions', 'readwrite');
   tx.objectStore('sessions').clear();
   await new Promise((res,rej)=>{ tx.oncomplete=res; tx.onerror=rej; });
 
-  // Réinitialiser settings progression
   const keysToReset = ['currentStreak','longestStreak','jokers','badges',
     'lastLearningDate','perfectStreak','redemptionDone','qcmSessionCount','masteredSnapshots'];
   keysToReset.forEach(k => { settings[k] = DEFAULT_SETTINGS[k]; });
@@ -2068,6 +2282,47 @@ async function resetProgress() {
   refreshHome();
   refreshSettings();
   showToast('Entraînement réinitialisé');
+}
+
+/* ── Supprimer l'application ── */
+async function deleteApp() {
+  try {
+    // 1. Vider IndexedDB
+    const stores = ['words','sessions','settings'];
+    for (const store of stores) {
+      const tx = db.transaction(store, 'readwrite');
+      tx.objectStore(store).clear();
+      await new Promise((res,rej)=>{ tx.oncomplete=res; tx.onerror=rej; });
+    }
+
+    // 2. Vider les caches Service Worker
+    if ('caches' in window) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map(k => caches.delete(k)));
+    }
+
+    // 3. Désenregistrer le Service Worker
+    if ('serviceWorker' in navigator) {
+      const regs = await navigator.serviceWorker.getRegistrations();
+      await Promise.all(regs.map(r => r.unregister()));
+    }
+
+    // 4. Message final
+    document.body.innerHTML = `
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;padding:24px;text-align:center;gap:16px">
+        <div style="font-size:32px">✓</div>
+        <div style="font-size:18px;font-weight:600;color:#1A1A1A">Données supprimées</div>
+        <div style="font-size:14px;color:#555;line-height:1.6">
+          Toutes les données de Lexis ont été effacées.<br>
+          Pour désinstaller l'application, rendez-vous dans les<br>
+          <strong>réglages de votre navigateur</strong> ou appuyez longuement<br>
+          sur l'icône Lexis sur votre écran d'accueil.
+        </div>
+      </div>`;
+  } catch(e) {
+    showToast('Erreur lors de la suppression');
+    console.error(e);
+  }
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -2080,24 +2335,6 @@ function shuffleArray(arr) {
     [a[i],a[j]] = [a[j],a[i]];
   }
   return a;
-}
-
-function buildQcmChoices(correct, inversed) {
-  const pool   = activeWords().filter(w => w.id !== correct.id);
-  const n      = (settings.qcmChoicesCount || 4) - 1;
-  const dist   = shuffleArray(pool).slice(0, n);
-  return shuffleArray([correct, ...dist]);
-}
-
-/* ─────────────────────────────────────────────────────────────
-   CLOCK
-───────────────────────────────────────────────────────────── */
-function updateClock() {
-  const now = new Date();
-  const h   = now.getHours().toString().padStart(2,'0');
-  const m   = now.getMinutes().toString().padStart(2,'0');
-  const el  = document.getElementById('home-time');
-  if (el) el.textContent = `${h}:${m}`;
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -2114,6 +2351,20 @@ function bindEvents() {
   document.getElementById('streak-pill-btn').addEventListener('click', openFlamePopup);
   document.getElementById('btn-go-qcm').addEventListener('click', startQcm);
   document.getElementById('btn-go-learn').addEventListener('click', startLearn);
+
+  // Case "à revoir" → Mots avec filtre review
+  document.getElementById('home-review-card').addEventListener('click', () => {
+    wordsFromReview = true;
+    activeFilters = new Set(['review']);
+    navigateTo('words');
+    // Màj visuels des pills après navigation
+    requestAnimationFrame(() => {
+      document.querySelectorAll('.filter-pill').forEach(p => {
+        p.classList.toggle('active', p.dataset.filter === 'review');
+      });
+    });
+  });
+
   document.getElementById('flame-popup').addEventListener('click', e => {
     if (e.target === document.getElementById('flame-popup')) closeModal('flame-popup');
   });
@@ -2121,18 +2372,23 @@ function bindEvents() {
     document.getElementById('joker-banner').classList.remove('show');
   });
 
-  /* ── QCM ── */
-  document.getElementById('qcm-back-btn').addEventListener('click', () => {
-    // Double-tap / retour simple
-    navigateTo('home');
-  });
+  /* ── QCM : bouton accueil (remplace flèche) ── */
+  document.getElementById('qcm-back-btn').addEventListener('click', () => navigateTo('home'));
+
+  /* ── QCM : changement de mode ── */
   document.getElementById('qcm-mode-btn').addEventListener('click', () => {
+    // Ignore le mot actuel, change le mode, démarre une nouvelle question
     qcmSession.mode = qcmSession.mode === 'mot-def' ? 'def-mot' : 'mot-def';
-    const inversed = qcmSession.mode === 'def-mot';
-    const modeBtn  = document.getElementById('qcm-mode-btn');
-    modeBtn.className = `mode-btn${inversed?' inversed':''}`;
-    // Nouvelle question (non comptée)
-    renderQcmQuestion();
+    const inversed  = qcmSession.mode === 'def-mot';
+    document.getElementById('qcm-mode-btn').className = `mode-btn${inversed?' inversed':''}`;
+    // Avancer au prochain mot (mot actuel ignoré)
+    qcmSession.answers.push({ wordId: qcmSession.words[qcmSession.idx]?.id, correct: null, elapsed: 0, skipped: true });
+    qcmSession.idx++;
+    if (qcmSession.idx >= qcmSession.words.length) {
+      endQcm();
+    } else {
+      renderQcmQuestion();
+    }
   });
 
   /* ── Apprentissage ── */
@@ -2201,13 +2457,7 @@ function bindEvents() {
     refreshWordList();
   });
 
-  /* ── Stats ── */
-  document.querySelectorAll('.ctab').forEach(t => {
-    t.addEventListener('click', () => drawCurve(t.dataset.period));
-  });
-
   /* ── Réglages ── */
-  // Jours
   document.getElementById('day-grid').addEventListener('click', e => {
     const btn = e.target.closest('.day-btn');
     if (!btn) return;
@@ -2219,18 +2469,25 @@ function bindEvents() {
     btn.className = `day-btn ${days.includes(day) ? 'on' : 'off'}`;
   });
 
-  // Steppers
-  makeStepper('learn-words', 'wordsPerSession',   5, 35, 1);
-  makeStepper('review-ratio', 'reviewRatioPct',   0, 35, 5, '%');
-  makeStepper('mastered-ratio','masteredRatioPct', 0, 35, 5, '%');
-  makeStepper('qcm-words',   'qcmWordsPerSession', 5, 25, 1);
-  makeStepper('qcm-choices', 'qcmChoicesCount',    2,  6, 2);
+  makeStepper('learn-words',    'wordsPerSession',   5, 35, 1);
+  makeStepper('review-ratio',   'reviewRatioPct',    0, 35, 5, '%');
+  makeStepper('mastered-ratio', 'masteredRatioPct',  0, 35, 5, '%');
+  makeStepper('qcm-words',      'qcmWordsPerSession',5, 25, 1);
+  makeStepper('qcm-choices',    'qcmChoicesCount',   2,  6, 2);
 
-  // Toggle mode QCM
   document.getElementById('qcm-mode-toggle').addEventListener('click', () => {
     settings.qcmInverseMode = !settings.qcmInverseMode;
     saveSetting('qcmInverseMode', settings.qcmInverseMode);
     refreshSettings();
+  });
+
+  // Volume
+  document.getElementById('volume-slider').addEventListener('input', e => {
+    const v = parseInt(e.target.value) / 100;
+    settings.soundVolume = v;
+    saveSetting('soundVolume', v);
+    setMasterVolume(v);
+    document.getElementById('volume-val').textContent = `${Math.round(v*100)}%`;
   });
 
   // Sons
@@ -2241,6 +2498,8 @@ function bindEvents() {
       settings[key] = !settings[key];
       saveSetting(key, settings[key]);
       refreshSoundBtns();
+      // Déclencher un son de test si on active
+      if (settings[key]) playTone(type);
     });
   });
 
@@ -2274,6 +2533,14 @@ function bindEvents() {
     await resetProgress();
   });
 
+  // Supprimer l'application
+  document.getElementById('btn-delete-app').addEventListener('click', () => openModal('delete-app-modal'));
+  document.getElementById('delete-app-cancel').addEventListener('click',  () => closeModal('delete-app-modal'));
+  document.getElementById('delete-app-confirm').addEventListener('click', async () => {
+    closeModal('delete-app-modal');
+    await deleteApp();
+  });
+
   /* ── Theme picker ── */
   document.getElementById('theme-cancel').addEventListener('click',  () => closeModal('theme-picker'));
   document.getElementById('theme-confirm').addEventListener('click', () => {
@@ -2287,12 +2554,14 @@ function bindEvents() {
     renderThemesGrid(e.target.value);
   });
 
-  // Fermer modals au clic overlay
   document.querySelectorAll('.modal-overlay').forEach(overlay => {
     overlay.addEventListener('click', e => {
       if (e.target === overlay) overlay.classList.remove('show');
     });
   });
+
+  /* ── Swipe bas global → accueil ── */
+  initGlobalSwipeDown();
 }
 
 function makeStepper(prefix, key, min, max, step, suffix='') {
@@ -2322,20 +2591,19 @@ async function init() {
     await loadSettings();
     await loadWords();
 
-    // Cacher splash
     setTimeout(() => {
       document.getElementById('splash').classList.add('hidden');
     }, 1600);
+
+    // Afficher la version dans le splash
+    const baseVer = settings.wordsBaseVersion || 'lexis_v2604-a';
+    const splashSub = document.getElementById('splash-sub');
+    if (splashSub) splashSub.textContent = `${baseVer} · ${allWords.length.toLocaleString('fr')} mots`;
 
     refreshHome();
     refreshSettings();
     bindEvents();
 
-    // Horloge
-    updateClock();
-    setInterval(updateClock, 30000);
-
-    // Service Worker
     if ('serviceWorker' in navigator) {
       navigator.serviceWorker.register('service-worker.js')
         .catch(err => console.warn('SW:', err));

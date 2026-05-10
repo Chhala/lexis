@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Lexis">
@@ -79,6 +79,7 @@
   margin: 0;
   padding: 0;
   -webkit-tap-highlight-color: transparent;
+  touch-action: pan-x pan-y;
 }
 
 html, body {
@@ -90,16 +91,42 @@ html, body {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-size: 16px;
+  /* Bloquer zoom */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
+}
+
+/* Orientation portrait */
+@media screen and (orientation: landscape) {
+  body::before {
+    content: 'Veuillez utiliser Lexis en mode portrait.';
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    position: fixed;
+    inset: 0;
+    background: var(--bg-primary);
+    font-size: 16px;
+    color: var(--text-secondary);
+    text-align: center;
+    z-index: 99999;
+    padding: 24px;
+  }
 }
 
 button, input, textarea, select {
   font-family: inherit;
-  font-size: inherit;
+  font-size: 16px; /* min 16px pour éviter zoom iOS */
   color: inherit;
   background: none;
   border: none;
   outline: none;
   -webkit-appearance: none;
+}
+/* Exceptions pour petits labels */
+.nat-btn, .filter-pill, .search-input, .choice, .hint-pill, .qcm-choice,
+.data-btn, .reset-btn, .day-btn {
+  font-size: 13px;
 }
 
 button { cursor: pointer; }
@@ -178,20 +205,9 @@ button { cursor: pointer; }
   to   { opacity: 1; transform: none; }
 }
 
-/* ── Status bar ── */
-.status-bar {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: calc(var(--safe-top) + 6px) 16px 3px;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  flex-shrink: 0;
-}
-
 /* ── Header ── */
 .hdr {
-  padding: 4px 14px 10px;
+  padding: calc(var(--safe-top) + 8px) 14px 10px;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -203,10 +219,6 @@ button { cursor: pointer; }
   font-weight: 500;
   color: var(--text-primary);
   flex: 1;
-}
-.hdr-sub {
-  font-size: 11px;
-  color: var(--text-tertiary);
 }
 
 /* ── Scroll area ── */
@@ -266,8 +278,6 @@ button { cursor: pointer; }
 /* ═══════════════════════════════════════════════════════
    COMPOSANTS COMMUNS
 ═══════════════════════════════════════════════════════ */
-
-/* ── Section label ── */
 .sec-label {
   font-size: 10px;
   font-weight: 600;
@@ -278,7 +288,6 @@ button { cursor: pointer; }
 }
 .sec-label:first-child { margin-top: 0; }
 
-/* ── Card ── */
 .card {
   background: var(--bg-secondary);
   border: var(--border-w) solid var(--border-color);
@@ -286,9 +295,7 @@ button { cursor: pointer; }
   padding: 10px 12px;
   margin-bottom: 6px;
 }
-.card-sm { padding: 8px 11px; }
 
-/* ── Card row (réglages) ── */
 .card-rows {
   background: var(--bg-secondary);
   border: var(--border-w) solid var(--border-color);
@@ -308,7 +315,6 @@ button { cursor: pointer; }
 .row-label { font-size: 13px; font-weight: 500; color: var(--text-primary); }
 .row-sub   { font-size: 11px; color: var(--text-tertiary); margin-top: 1px; }
 
-/* ── Bouton primaire ── */
 .btn-primary {
   padding: 11px 18px;
   border-radius: var(--radius-sm);
@@ -337,7 +343,6 @@ button { cursor: pointer; }
   text-align: center;
 }
 
-/* ── Icon button (rond) ── */
 .icon-btn {
   width: 32px;
   height: 32px;
@@ -360,7 +365,6 @@ button { cursor: pointer; }
   stroke-linejoin: round;
 }
 
-/* ── Stepper ── */
 .stepper {
   display: flex;
   align-items: center;
@@ -392,7 +396,6 @@ button { cursor: pointer; }
   text-align: center;
 }
 
-/* ── Toggle ── */
 .toggle {
   width: 44px;
   height: 26px;
@@ -418,7 +421,6 @@ button { cursor: pointer; }
 .toggle.on::after  { left: 21px; }
 .toggle.off::after { left: 3px; }
 
-/* ── Badge nature ── */
 .badge {
   display: inline-block;
   font-size: 10px;
@@ -435,7 +437,6 @@ button { cursor: pointer; }
 .badge-loc { background: var(--badge-loc-bg); color: var(--badge-loc-text); }
 .badge-n   { background: var(--badge-n-bg);   color: var(--badge-n-text); }
 
-/* ── Progress bar ── */
 .progress-bar {
   height: 4px;
   border-radius: var(--radius-pill);
@@ -450,7 +451,6 @@ button { cursor: pointer; }
   transition: width 0.4s ease;
 }
 
-/* ── Pill filtre ── */
 .filter-pill {
   padding: 5px 11px;
   border-radius: var(--radius-pill);
@@ -464,13 +464,12 @@ button { cursor: pointer; }
   flex-shrink: 0;
   transition: all var(--transition-fast);
 }
-.filter-pill.active      { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
-.filter-pill.f-review    { background: var(--color-danger-soft);  border-color: var(--color-danger);   color: var(--color-danger); }
-.filter-pill.f-mastered  { background: var(--color-success-soft); border-color: var(--color-success);  color: var(--color-success); }
-.filter-pill.f-added     { background: var(--color-primary-soft); border-color: var(--color-primary);  color: var(--color-primary); }
-.filter-pill.f-archived  { background: #F5F5F5; border-color: #CCC; color: var(--text-tertiary); font-style: italic; }
+.filter-pill.active     { background: var(--color-primary); border-color: var(--color-primary); color: #fff; }
+.filter-pill.f-review   { background: var(--color-danger-soft);  border-color: var(--color-danger);   color: var(--color-danger); }
+.filter-pill.f-mastered { background: var(--color-success-soft); border-color: var(--color-success);  color: var(--color-success); }
+.filter-pill.f-added    { background: var(--color-primary-soft); border-color: var(--color-primary);  color: var(--color-primary); }
+.filter-pill.f-archived { background: #F5F5F5; border-color: #CCC; color: var(--text-tertiary); font-style: italic; }
 
-/* ── Chip thème ── */
 .theme-chip {
   display: inline-block;
   padding: 3px 9px;
@@ -482,7 +481,6 @@ button { cursor: pointer; }
   font-weight: 500;
 }
 
-/* ── Toast ── */
 .toast {
   position: fixed;
   top: calc(var(--safe-top) + 18px);
@@ -506,7 +504,6 @@ button { cursor: pointer; }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 .toast svg { width: 13px; height: 13px; stroke: #fff; fill: none; stroke-width: 2.5; stroke-linecap: round; }
 
-/* ── Modal overlay / sheet ── */
 .modal-overlay {
   position: fixed;
   inset: 0;
@@ -558,18 +555,17 @@ button { cursor: pointer; }
   margin-top: 16px;
 }
 .modal-actions button { flex: 1; padding: 12px; border-radius: var(--radius-sm); font-size: 14px; font-weight: 600; cursor: pointer; }
-.modal-cancel { background: var(--bg-secondary); color: var(--text-secondary); }
+.modal-cancel  { background: var(--bg-secondary); color: var(--text-secondary); }
 .modal-confirm { background: var(--color-primary); color: #fff; }
 .modal-danger  { background: var(--color-danger);  color: #fff; }
 
-/* ── Input field ── */
 .field {
   width: 100%;
   padding: 10px 12px;
   border-radius: var(--radius-sm);
   border: var(--border-w) solid var(--border-color-mid);
   background: var(--bg-secondary);
-  font-size: 14px;
+  font-size: 16px;
   color: var(--text-primary);
   transition: border-color var(--transition-fast), background var(--transition-fast);
 }
@@ -589,7 +585,6 @@ button { cursor: pointer; }
 }
 .field-label:first-child { margin-top: 0; }
 
-/* ── Joker banner ── */
 #joker-banner {
   display: none;
   background: var(--color-warning-soft);
@@ -602,20 +597,14 @@ button { cursor: pointer; }
 }
 #joker-banner.show { display: flex; }
 #joker-banner p { font-size: 13px; color: #7B5800; flex: 1; line-height: 1.4; }
-#joker-banner-close {
-  font-size: 16px;
-  color: #B8860B;
-  cursor: pointer;
-  padding: 0 2px;
-  flex-shrink: 0;
-}
+#joker-banner-close { font-size: 16px; color: #B8860B; cursor: pointer; padding: 0 2px; flex-shrink: 0; }
 
 /* ═══════════════════════════════════════════════════════
    ÉCRAN ACCUEIL
 ═══════════════════════════════════════════════════════ */
 #screen-home .hdr {
   justify-content: space-between;
-  padding: 6px 16px 10px;
+  padding: calc(var(--safe-top) + 8px) 16px 10px;
 }
 .logo {
   font-family: var(--font-display);
@@ -643,7 +632,6 @@ button { cursor: pointer; }
 .streak-ico { font-size: 15px; line-height: 1; }
 .streak-shield { font-size: 11px; color: var(--text-tertiary); }
 
-/* Hero card */
 .hero-card {
   background: linear-gradient(135deg, #5341D6, #7B6EE8);
   border-radius: var(--radius-lg);
@@ -656,12 +644,10 @@ button { cursor: pointer; }
 .hero-card::before {
   content: '';
   position: absolute;
-  width: 120px;
-  height: 120px;
+  width: 120px; height: 120px;
   background: rgba(255,255,255,0.07);
   border-radius: 50%;
-  top: -30px;
-  right: -20px;
+  top: -30px; right: -20px;
 }
 .hero-lbl { font-size: 10px; opacity: 0.75; text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 5px; }
 .hero-title { font-size: 18px; font-weight: 500; margin-bottom: 14px; }
@@ -669,7 +655,6 @@ button { cursor: pointer; }
 .hero-prog-fill { height: 100%; border-radius: var(--radius-pill); background: #fff; transition: width 0.5s ease; }
 .hero-foot { display: flex; justify-content: space-between; font-size: 12px; opacity: 0.75; }
 
-/* Stats grid */
 .stat-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -682,10 +667,15 @@ button { cursor: pointer; }
   padding: 12px;
   border: var(--border-w) solid var(--border-color);
 }
+/* Case "à revoir" cliquable */
+.stat-card-clickable {
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+.stat-card-clickable:active { background: #EDEDEE; }
 .stat-lbl { font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 3px; }
 .stat-val { font-size: 26px; font-weight: 500; color: var(--text-primary); line-height: 1.1; }
 
-/* Mode cards */
 .mode-card {
   display: flex;
   align-items: center;
@@ -700,8 +690,7 @@ button { cursor: pointer; }
 }
 .mode-card:active { background: #efefef; }
 .mode-icon {
-  width: 40px;
-  height: 40px;
+  width: 40px; height: 40px;
   border-radius: 10px;
   display: flex;
   align-items: center;
@@ -728,7 +717,6 @@ button { cursor: pointer; }
   flex-shrink: 0;
 }
 
-/* Search row */
 .search-row {
   display: flex;
   gap: 6px;
@@ -749,7 +737,7 @@ button { cursor: pointer; }
 .search-box svg { width: 14px; height: 14px; stroke: var(--text-disabled); fill: none; stroke-width: 2; stroke-linecap: round; flex-shrink: 0; }
 .search-input {
   flex: 1;
-  font-size: 13px;
+  font-size: 16px;
   color: var(--text-primary);
   background: none;
   border: none;
@@ -770,7 +758,6 @@ button { cursor: pointer; }
 }
 .cycle-btn svg { width: 15px; height: 15px; stroke: #fff; fill: none; stroke-width: 2.2; stroke-linecap: round; }
 
-/* Filters */
 .filters-wrap {
   display: flex;
   flex-wrap: wrap;
@@ -778,7 +765,6 @@ button { cursor: pointer; }
   margin-bottom: 10px;
 }
 
-/* Word list */
 .word-list { display: flex; flex-direction: column; gap: 5px; }
 
 .word-row {
@@ -810,15 +796,14 @@ button { cursor: pointer; }
 .word-def-preview { font-size: 12px; color: var(--text-disabled); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 180px; }
 
 .word-status-dot {
-  width: 7px;
-  height: 7px;
+  width: 7px; height: 7px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 .status-dot-review   { background: var(--color-warning); }
 .status-dot-mastered { background: var(--color-success); }
 
-/* Fiche étendue */
+/* Fiche étendue — pas de boutons archiver/modifier visibles ici */
 .word-detail {
   padding: 0 12px 12px;
   border-top: var(--border-w) solid var(--border-color);
@@ -842,9 +827,7 @@ button { cursor: pointer; }
 /* Swipe actions */
 .word-actions {
   position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
+  right: 0; top: 0; bottom: 0;
   display: flex;
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
   overflow: hidden;
@@ -862,24 +845,14 @@ button { cursor: pointer; }
 .swipe-arch-btn { background: var(--color-danger-soft);  color: var(--color-danger); }
 .swipe-edit-btn svg, .swipe-arch-btn svg { width: 16px; height: 16px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
 
-/* ── Formulaire création/édition ── */
-#word-form {
-  display: none;
-  flex-direction: column;
-  flex: 1;
-  overflow: hidden;
-}
+/* ── Formulaire ── */
+#word-form { display: none; flex-direction: column; flex: 1; overflow: hidden; }
 #word-form.active { display: flex; }
 #word-form .hdr { justify-content: space-between; }
 .form-scroll { flex: 1; overflow-y: auto; padding: 14px; -webkit-overflow-scrolling: touch; }
 .form-scroll::-webkit-scrollbar { display: none; }
 
-.nature-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-bottom: 4px;
-}
+.nature-grid { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
 .nat-btn {
   padding: 7px 12px;
   border-radius: var(--radius-sm);
@@ -915,8 +888,7 @@ button { cursor: pointer; }
 
 .theme-row { display: flex; flex-wrap: wrap; gap: 5px; align-items: center; }
 .theme-add-btn {
-  width: 24px;
-  height: 24px;
+  width: 24px; height: 24px;
   border-radius: 50%;
   background: var(--color-warning);
   border: none;
@@ -948,7 +920,6 @@ button { cursor: pointer; }
 /* ═══════════════════════════════════════════════════════
    ÉCRAN STATS
 ═══════════════════════════════════════════════════════ */
-/* Progress bar globale (3 segments) */
 .prog-global {
   height: 10px;
   border-radius: var(--radius-pill);
@@ -965,30 +936,17 @@ button { cursor: pointer; }
 .leg-item { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-secondary); }
 .leg-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
 
-/* Onglets courbe */
-.curve-tabs {
+/* Courbe — sans onglets */
+.curve-header {
   display: flex;
-  gap: 3px;
-  margin-bottom: 8px;
   align-items: center;
+  justify-content: flex-end;
+  margin-bottom: 8px;
 }
-.ctab {
-  padding: 4px 8px;
-  border-radius: var(--radius-xs);
-  font-size: 11px;
-  font-weight: 500;
-  color: var(--text-tertiary);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: all var(--transition-fast);
-}
-.ctab.active { background: var(--color-primary); color: #fff; }
 .ctab-pct {
-  margin-left: auto;
   font-size: 13px;
   font-weight: 700;
   color: var(--color-primary);
-  padding-left: 8px;
   white-space: nowrap;
 }
 
@@ -996,7 +954,8 @@ button { cursor: pointer; }
 .curve-date-label {
   position: absolute;
   top: 3px;
-  left: 40%;
+  left: 50%;
+  transform: translateX(-50%);
   font-size: 10px;
   color: var(--text-secondary);
   background: var(--bg-secondary);
@@ -1005,23 +964,24 @@ button { cursor: pointer; }
   border: var(--border-w) solid var(--border-color-mid);
   white-space: nowrap;
   pointer-events: none;
+  display: none;
 }
 
-/* Sessions */
 .sessions-row { display: flex; gap: 8px; margin-bottom: 6px; }
 .session-card { flex: 1; background: var(--bg-secondary); border-radius: var(--radius-sm); padding: 10px 12px; border: var(--border-w) solid var(--border-color); text-align: center; }
 .session-val { font-size: 24px; font-weight: 600; color: var(--text-primary); }
 .session-lbl { font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.04em; margin-top: 2px; }
 
-/* Mots ratés */
+/* Mots ratés — avec séparateur fin blanc */
 .diff-item {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 8px 0;
-  border-bottom: var(--border-w) solid var(--border-color);
 }
-.diff-item:last-child { border: none; }
+.diff-item.diff-sep {
+  border-bottom: 1px solid rgba(255,255,255,0.6);
+}
 .diff-left { display: flex; align-items: center; gap: 6px; }
 .diff-word { font-size: 13px; font-weight: 500; color: var(--text-primary); }
 .diff-errors { font-size: 12px; color: var(--color-danger); font-weight: 500; }
@@ -1036,6 +996,7 @@ button { cursor: pointer; }
   padding: 10px 12px;
 }
 .day-btn {
+  /* Taille réduite de 20% vs original */
   aspect-ratio: 1;
   border-radius: 50%;
   display: flex;
@@ -1045,13 +1006,46 @@ button { cursor: pointer; }
   font-weight: 500;
   cursor: pointer;
   transition: all var(--transition-fast);
+  width: 80%;
+  margin: 0 auto;
 }
 .day-btn.on  { background: var(--color-primary); color: #fff; }
 .day-btn.off { background: #EFEFEF; color: var(--text-tertiary); }
 
+/* Volume slider */
+.volume-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: var(--border-w) solid var(--border-color);
+}
+.volume-slider {
+  flex: 1;
+  -webkit-appearance: none;
+  height: 4px;
+  border-radius: 2px;
+  background: var(--border-color-mid);
+  outline: none;
+}
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  cursor: pointer;
+}
+.volume-val {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-primary);
+  min-width: 32px;
+  text-align: right;
+}
+
 .speaker-btn {
-  width: 32px;
-  height: 32px;
+  width: 32px; height: 32px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1095,7 +1089,22 @@ button { cursor: pointer; }
   border: var(--border-w) solid #E8C0C0;
   text-align: center;
   cursor: pointer;
+  margin-bottom: 8px;
 }
+.delete-btn {
+  display: block;
+  width: 100%;
+  padding: 12px;
+  border-radius: var(--radius-sm);
+  background: var(--bg-secondary);
+  color: var(--color-danger);
+  font-size: 14px;
+  font-weight: 600;
+  border: var(--border-w) solid var(--color-danger);
+  text-align: center;
+  cursor: pointer;
+}
+
 .version-line {
   font-size: 11px;
   color: var(--text-disabled);
@@ -1104,7 +1113,6 @@ button { cursor: pointer; }
   padding-bottom: 8px;
 }
 
-/* ── Warn card (reset) ── */
 .warn-card {
   background: var(--color-danger-soft);
   border-radius: var(--radius-sm);
@@ -1188,6 +1196,19 @@ button { cursor: pointer; }
 }
 .q-def { font-size: 14px; color: var(--text-primary); line-height: 1.55; }
 
+/* Indice swipe gauche attendu */
+.swipe-hint {
+  font-size: 11px;
+  color: var(--text-disabled);
+  text-align: center;
+  margin-top: 8px;
+  animation: pulse 1.5s ease infinite;
+}
+@keyframes pulse {
+  0%,100% { opacity: 0.4; }
+  50%      { opacity: 1; }
+}
+
 .choice {
   display: block;
   width: 100%;
@@ -1209,7 +1230,6 @@ button { cursor: pointer; }
 .choice.wrong   { background: var(--color-danger-soft);  border-color: var(--color-danger);  color: #791F1F; }
 .choice:disabled { cursor: default; }
 
-/* Résultats QCM */
 .results-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1267,7 +1287,6 @@ button { cursor: pointer; }
   flex-shrink: 0;
 }
 
-/* Phase 1 : Mémorisation */
 #memo-phase { display: flex; flex-direction: column; flex: 1; overflow: hidden; }
 .memo-scroll { flex: 1; overflow-y: auto; padding: 14px; -webkit-overflow-scrolling: touch; }
 .memo-scroll::-webkit-scrollbar { display: none; }
@@ -1284,6 +1303,7 @@ button { cursor: pointer; }
 .memo-card.mastered { border: 1.5px dashed var(--color-success); }
 .memo-word { font-size: 16px; font-weight: 500; color: var(--text-primary); margin-bottom: 4px; font-family: var(--font-display); }
 .memo-def  { font-size: 13px; color: var(--text-secondary); line-height: 1.5; margin-top: 4px; }
+.memo-themes { margin-top: 6px; display: flex; flex-wrap: wrap; gap: 4px; }
 
 .tester-btn-wrap { padding: 0 14px calc(16px + var(--safe-bottom)); flex-shrink: 0; }
 .tester-btn {
@@ -1301,11 +1321,17 @@ button { cursor: pointer; }
 .tester-btn.enabled  { background: var(--color-primary); color: #fff; }
 .tester-btn.disabled { background: var(--bg-secondary); color: var(--text-disabled); border: var(--border-w) solid var(--border-color); cursor: default; }
 
-/* Phase 2 : Restitution */
 #restitution-phase { display: none; flex-direction: column; flex: 1; overflow: hidden; }
 #restitution-phase.active { display: flex; }
 
-.restit-body { padding: 14px; flex: 1; overflow-y: auto; -webkit-overflow-scrolling: touch; }
+.restit-body {
+  padding: 14px;
+  flex: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+}
 .restit-body::-webkit-scrollbar { display: none; }
 
 .def-card {
@@ -1348,8 +1374,7 @@ button { cursor: pointer; }
 .answer-input.correct { border-color: var(--color-success); background: var(--color-success-soft); color: #27500A; }
 .answer-input.wrong   { border-color: var(--color-danger);  background: var(--color-danger-soft);  color: #791F1F; }
 .validate-btn {
-  width: 44px;
-  height: 44px;
+  width: 44px; height: 44px;
   border-radius: var(--radius-sm);
   background: var(--color-primary);
   border: none;
@@ -1361,29 +1386,20 @@ button { cursor: pointer; }
 }
 .validate-btn svg { width: 16px; height: 16px; stroke: #fff; fill: none; stroke-width: 2.5; stroke-linecap: round; }
 
-/* Feedback erreur */
 .feedback-wrong { display: none; margin-bottom: 12px; }
 .feedback-wrong.show { display: flex; flex-direction: column; gap: 6px; }
 .fb-label { font-size: 10px; color: var(--text-tertiary); text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 3px; }
-.fb-input {
-  padding: 10px 14px;
-  border-radius: var(--radius-sm);
-  font-size: 16px;
-  font-weight: 500;
-  min-height: 44px;
-}
+.fb-input { padding: 10px 14px; border-radius: var(--radius-sm); font-size: 16px; font-weight: 500; min-height: 44px; }
 .fb-wrong   { background: var(--color-danger-soft);  border: var(--border-w) solid var(--color-danger);  color: #791F1F; }
 .fb-correct { background: var(--color-success-soft); border: var(--border-w) solid var(--color-success); color: #27500A; }
 
-/* QCM inline */
+/* QCM inline — positionné en haut quand actif */
 .qcm-inline {
   display: none;
   flex-direction: column;
   gap: 8px;
-  padding: 12px;
-  margin: 0 14px 14px;
-  border: var(--border-w) solid var(--border-color);
-  border-radius: var(--radius-md);
+  padding: 12px 14px;
+  border-bottom: var(--border-w) solid var(--border-color);
   background: var(--bg-secondary);
   flex-shrink: 0;
 }
@@ -1403,10 +1419,6 @@ button { cursor: pointer; }
 .qcm-choice.correct { background: var(--color-success-soft); border-color: var(--color-success); color: #27500A; }
 .qcm-choice.wrong   { background: var(--color-danger-soft);  border-color: var(--color-danger);  color: #791F1F; }
 
-/* Keyboard area */
-.keyboard-area { display: none; }
-
-/* Résultats apprentissage */
 #learn-results { display: none; flex-direction: column; flex: 1; overflow: hidden; }
 #learn-results.active { display: flex; }
 
@@ -1420,7 +1432,7 @@ button { cursor: pointer; }
   align-items: center;
   gap: 12px;
 }
-.reward-icon { font-size: 24px; }
+.reward-icon  { font-size: 24px; }
 .reward-title { font-size: 13px; font-weight: 600; color: #633806; }
 .reward-sub   { font-size: 12px; color: #8B5A0A; }
 
@@ -1439,8 +1451,7 @@ button { cursor: pointer; }
 }
 .badge-item:last-child { border: none; }
 .badge-icon-wrap {
-  width: 36px;
-  height: 36px;
+  width: 36px; height: 36px;
   border-radius: 9px;
   display: flex;
   align-items: center;
@@ -1498,7 +1509,7 @@ button { cursor: pointer; }
   border-radius: var(--radius-sm);
   border: var(--border-w) solid var(--border-color-mid);
   background: var(--bg-secondary);
-  font-size: 13px;
+  font-size: 16px;
   margin-bottom: 10px;
 }
 
@@ -1540,7 +1551,7 @@ button { cursor: pointer; }
 <div id="splash">
   <div class="splash-logo">L<em>e</em>xis</div>
   <div class="splash-bar-wrap"><div class="splash-bar"></div></div>
-  <div class="splash-sub">Base v2604-a · 4 244 mots</div>
+  <div class="splash-sub" id="splash-sub">Chargement…</div>
 </div>
 
 <!-- ════════════════════════════════════════
@@ -1548,16 +1559,13 @@ button { cursor: pointer; }
 ════════════════════════════════════════ -->
 <div id="app">
 
-  <!-- ── Toast global ── -->
   <div id="toast" class="toast">
     <svg viewBox="0 0 24 24"><polyline points="20 6 9 17 4 12"/></svg>
     <span id="toast-msg"></span>
   </div>
 
-  <!-- ── Confettis ── -->
   <div class="confetti-wrap" id="confetti-container"></div>
 
-  <!-- ── Bannière joker ── -->
   <div id="joker-banner">
     <p id="joker-banner-msg"></p>
     <span id="joker-banner-close">✕</span>
@@ -1567,8 +1575,7 @@ button { cursor: pointer; }
        ÉCRAN ACCUEIL
   ════════════════════════════════════ -->
   <div id="screen-home" class="screen active">
-    <div class="status-bar"><span id="home-time">9:41</span><span>●●●</span></div>
-    <div class="hdr" style="justify-content:space-between;padding:6px 16px 10px">
+    <div class="hdr" style="justify-content:space-between">
       <div class="logo">L<em>e</em>xis</div>
       <div class="streak-pill" id="streak-pill-btn">
         <span class="streak-n" id="streak-n">0</span>
@@ -1577,17 +1584,15 @@ button { cursor: pointer; }
       </div>
     </div>
     <div class="scroll" id="home-scroll">
-      <!-- Hero -->
       <div class="hero-card" id="hero-card">
         <div class="hero-lbl">Défi du jour</div>
         <div class="hero-title" id="hero-title">Session d'apprentissage</div>
         <div class="hero-prog-wrap"><div class="hero-prog-fill" id="hero-prog" style="width:0%"></div></div>
         <div class="hero-foot">
-          <span id="hero-foot-left">0 / 15 mots</span>
+          <span id="hero-foot-left">0 / 12 mots</span>
           <span id="hero-foot-right">Lun – Ven</span>
         </div>
       </div>
-      <!-- Stats grid -->
       <div class="stat-grid">
         <div class="stat-card">
           <div class="stat-lbl">Total mots</div>
@@ -1597,7 +1602,8 @@ button { cursor: pointer; }
           <div class="stat-lbl">Maîtrisés</div>
           <div class="stat-val" id="home-mastered" style="color:#27500A">0</div>
         </div>
-        <div class="stat-card">
+        <!-- Case "à revoir" : cliquable → Mots avec filtre review -->
+        <div class="stat-card stat-card-clickable" id="home-review-card">
           <div class="stat-lbl">À revoir</div>
           <div class="stat-val" id="home-review" style="color:var(--color-danger)">0</div>
         </div>
@@ -1606,7 +1612,6 @@ button { cursor: pointer; }
           <div class="stat-val" id="home-rate" style="color:var(--color-primary)">—</div>
         </div>
       </div>
-      <!-- Modes -->
       <div class="sec-label">Modes de jeu</div>
       <div class="mode-card" id="btn-go-qcm">
         <div class="mode-icon" style="background:#EEEDFE">
@@ -1635,7 +1640,6 @@ button { cursor: pointer; }
        ÉCRAN MOTS
   ════════════════════════════════════ -->
   <div id="screen-words" class="screen">
-    <div class="status-bar"><span>9:41</span><span>●●●</span></div>
     <div class="hdr">
       <div class="hdr-title" id="words-count">4 244 mots</div>
       <button class="add-btn" id="btn-add-word">+ Ajouter</button>
@@ -1644,7 +1648,7 @@ button { cursor: pointer; }
       <div class="search-row">
         <div class="search-box">
           <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-          <input class="search-input" id="search-input" placeholder="Rechercher un mot…" type="text" autocomplete="off" autocorrect="off" autocapitalize="off">
+          <input class="search-input" id="search-input" placeholder="Rechercher un mot…" type="search" autocomplete="off" autocorrect="off" autocapitalize="off">
         </div>
         <button class="cycle-btn" id="cycle-btn" title="Changer le mode de recherche">
           <svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"/><polyline points="23 20 23 14 17 14"/><path d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10"/><path d="M23 14l-4.64 4.36A9 9 0 0 1 3.51 15"/></svg>
@@ -1666,9 +1670,8 @@ button { cursor: pointer; }
     <div class="scroll" style="padding-top:6px">
       <div class="word-list" id="word-list"></div>
     </div>
-    <!-- Formulaire création/édition -->
+    <!-- Formulaire -->
     <div id="word-form">
-      <div class="status-bar"><span>9:41</span><span>●●●</span></div>
       <div class="hdr">
         <button class="icon-btn" id="form-cancel-btn">
           <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -1712,10 +1715,8 @@ button { cursor: pointer; }
        ÉCRAN STATS
   ════════════════════════════════════ -->
   <div id="screen-stats" class="screen">
-    <div class="status-bar"><span>9:41</span><span>●●●</span></div>
     <div class="hdr"><div class="hdr-title">Statistiques</div></div>
     <div class="scroll">
-      <!-- Progression globale -->
       <div class="sec-label">Progression globale</div>
       <div class="card">
         <div class="prog-global" id="prog-global">
@@ -1730,21 +1731,15 @@ button { cursor: pointer; }
         <div class="leg-item mt-8"><div class="leg-dot" style="background:#D8D8D8"></div><span id="leg-v">À voir 100%</span></div>
       </div>
 
-      <!-- Évolution maîtrisés -->
+      <!-- Évolution — sans onglets de période -->
       <div class="sec-label">Évolution des mots maîtrisés</div>
       <div class="card" style="padding:10px 12px">
-        <div class="curve-tabs" id="curve-tabs">
-          <span class="ctab" data-period="1S">1S</span>
-          <span class="ctab" data-period="1M">1M</span>
-          <span class="ctab" data-period="3M">3M</span>
-          <span class="ctab" data-period="6M">6M</span>
-          <span class="ctab" data-period="1A">1A</span>
-          <span class="ctab active" data-period="Max">Max</span>
+        <div class="curve-header">
           <span class="ctab-pct" id="curve-pct">0%</span>
         </div>
         <div class="curve-wrap">
-          <div class="curve-date-label" id="curve-date" style="display:none"></div>
-          <svg id="curve-svg" width="100%" height="70" viewBox="0 0 300 70" preserveAspectRatio="none">
+          <div class="curve-date-label" id="curve-date"></div>
+          <svg id="curve-svg" width="100%" height="70" viewBox="0 0 300 70" preserveAspectRatio="none" style="touch-action:none">
             <defs>
               <linearGradient id="curveGrad" x1="0" y1="0" x2="0" y2="1">
                 <stop offset="0%" stop-color="#5341D6" stop-opacity="0.15"/>
@@ -1760,13 +1755,11 @@ button { cursor: pointer; }
         </div>
       </div>
 
-      <!-- Activité 7 jours -->
       <div class="sec-label">Activité — 7 derniers jours</div>
       <div class="card" style="padding:12px">
         <svg id="histo-svg" width="100%" height="110" viewBox="0 0 294 110" preserveAspectRatio="none"></svg>
       </div>
 
-      <!-- Sessions -->
       <div class="sec-label">Sessions</div>
       <div class="sessions-row">
         <div class="session-card">
@@ -1779,7 +1772,6 @@ button { cursor: pointer; }
         </div>
       </div>
 
-      <!-- Mots les plus ratés -->
       <div class="sec-label">Mots les plus ratés</div>
       <div class="card" id="diff-words-list">
         <div style="font-size:13px;color:var(--text-disabled);text-align:center;padding:8px 0">Pas encore de données</div>
@@ -1791,7 +1783,6 @@ button { cursor: pointer; }
        ÉCRAN RÉGLAGES
   ════════════════════════════════════ -->
   <div id="screen-settings" class="screen">
-    <div class="status-bar"><span>9:41</span><span>●●●</span></div>
     <div class="hdr"><div class="hdr-title">Réglages</div></div>
     <div class="scroll">
 
@@ -1860,8 +1851,14 @@ button { cursor: pointer; }
         </div>
       </div>
 
-      <div class="sec-label">Sons</div>
+      <div class="sec-label">Son</div>
       <div class="card-rows">
+        <!-- Volume global -->
+        <div class="volume-row">
+          <div class="row-label" style="flex-shrink:0">Volume</div>
+          <input type="range" class="volume-slider" id="volume-slider" min="0" max="100" value="50">
+          <span class="volume-val" id="volume-val">50%</span>
+        </div>
         <div class="card-row">
           <div class="row-label">Bonne réponse</div>
           <div class="speaker-btn on" id="snd-correct-btn">
@@ -1904,8 +1901,9 @@ button { cursor: pointer; }
 
       <div class="sec-label">Réinitialisation</div>
       <button class="reset-btn" id="btn-reset">Réinitialiser l'entraînement</button>
+      <button class="delete-btn" id="btn-delete-app">Supprimer l'application</button>
 
-      <div class="version-line">Lexis v1.0 — Base v2604-a</div>
+      <div class="version-line" id="version-line">Lexis v1.0</div>
     </div>
   </div>
 
@@ -1914,8 +1912,9 @@ button { cursor: pointer; }
   ════════════════════════════════════ -->
   <div id="screen-qcm">
     <div class="qcm-hdr">
+      <!-- Icône maison (remplace flèche) -->
       <button class="icon-btn" id="qcm-back-btn">
-        <svg viewBox="0 0 24 24"><path d="M19 12H5"/><polyline points="12 19 5 12 12 5"/></svg>
+        <svg viewBox="0 0 24 24" stroke="var(--text-secondary)" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
       </button>
       <div class="qcm-counter" id="qcm-counter">1 / 10</div>
       <button class="mode-btn" id="qcm-mode-btn">
@@ -1924,7 +1923,6 @@ button { cursor: pointer; }
       </button>
     </div>
 
-    <!-- Question -->
     <div id="qcm-question" class="qcm-body">
       <div class="progress-bar"><div class="progress-fill" id="qcm-progress"></div></div>
       <div class="mode-tag" id="qcm-mode-tag">Quelle est la définition de…</div>
@@ -1937,7 +1935,6 @@ button { cursor: pointer; }
       <div id="qcm-choices"></div>
     </div>
 
-    <!-- Résultats -->
     <div id="qcm-results" class="qcm-body" style="display:none">
       <div class="results-grid">
         <div class="result-card"><div class="result-lbl">Score</div><div class="result-val" id="res-score" style="color:var(--color-primary)">0%</div></div>
@@ -1956,17 +1953,15 @@ button { cursor: pointer; }
   <div id="screen-learn">
     <div class="learn-hdr">
       <button class="icon-btn" id="learn-back-btn">
-        <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        <svg viewBox="0 0 24 24" stroke="var(--text-secondary)" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
       </button>
-      <div class="learn-counter" id="learn-counter">15</div>
+      <div class="learn-counter" id="learn-counter">12</div>
       <div class="phase-tag" id="learn-phase-tag">Mémorisation</div>
     </div>
 
     <!-- Phase 1 : Mémorisation -->
     <div id="memo-phase">
-      <div class="memo-scroll" id="memo-scroll">
-        <!-- Cartes générées dynamiquement -->
-      </div>
+      <div class="memo-scroll" id="memo-scroll"></div>
       <div class="tester-btn-wrap">
         <button class="tester-btn disabled" id="tester-btn">Tester</button>
       </div>
@@ -1975,13 +1970,15 @@ button { cursor: pointer; }
     <!-- Phase 2 : Restitution -->
     <div id="restitution-phase">
       <div class="progress-bar" style="margin:0 14px;flex-shrink:0"><div class="progress-fill" id="learn-progress"></div></div>
+      <!-- QCM inline — positionné en haut via order:-1 quand actif -->
+      <div class="qcm-inline" id="qcm-inline"></div>
       <div class="restit-body" id="restit-body">
         <div class="def-card">
           <div class="def-label">Définition</div>
           <div class="def-text" id="learn-def-text"></div>
         </div>
         <div class="hint-row">
-          <button class="hint-pill" id="hint-letter-btn">a…</button>
+          <button class="hint-pill" id="hint-letter-btn">syl…</button>
           <button class="hint-pill" id="hint-qcm-btn">QCM</button>
         </div>
         <div class="input-row">
@@ -2000,10 +1997,6 @@ button { cursor: pointer; }
             <div class="fb-input fb-correct" id="fb-correct-text"></div>
           </div>
         </div>
-      </div>
-      <!-- QCM inline (remplace le clavier) -->
-      <div class="qcm-inline" id="qcm-inline">
-        <!-- 4 boutons générés dynamiquement -->
       </div>
     </div>
 
@@ -2061,7 +2054,7 @@ button { cursor: pointer; }
   <div class="modal-overlay" id="flame-popup">
     <div class="modal-sheet">
       <div class="modal-handle"></div>
-      <div class="modal-title">Succès & récompenses</div>
+      <div class="modal-title">Succès &amp; récompenses</div>
       <div class="serie-grid" style="margin-top:12px">
         <div class="serie-card"><div class="serie-val" id="popup-serie">0 🔥</div><div class="serie-lbl">Série actuelle</div></div>
         <div class="serie-card"><div class="serie-val" id="popup-best">0</div><div class="serie-lbl">Meilleure série</div></div>
@@ -2074,7 +2067,7 @@ button { cursor: pointer; }
     </div>
   </div>
 
-  <!-- Modal confirmation reset -->
+  <!-- Modal reset -->
   <div class="modal-overlay" id="reset-modal">
     <div class="modal-sheet">
       <div class="modal-handle"></div>
@@ -2091,6 +2084,26 @@ button { cursor: pointer; }
       <div class="modal-actions">
         <button class="modal-cancel" id="reset-cancel">Annuler</button>
         <button class="modal-danger" id="reset-confirm">Réinitialiser</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal supprimer l'application -->
+  <div class="modal-overlay" id="delete-app-modal">
+    <div class="modal-sheet">
+      <div class="modal-handle"></div>
+      <div class="warn-card">
+        <div class="warn-title">Supprimer l'application ?</div>
+        <div class="warn-list">
+          · Toutes les données seront effacées<br>
+          · Progression, mots, statistiques<br>
+          · Cache et fichiers de l'application
+        </div>
+        <div class="warn-note">Pour désinstaller l'icône, utilisez ensuite les réglages de votre navigateur ou appuyez longuement sur l'icône.</div>
+      </div>
+      <div class="modal-actions">
+        <button class="modal-cancel" id="delete-app-cancel">Annuler</button>
+        <button class="modal-danger" id="delete-app-confirm">Supprimer</button>
       </div>
     </div>
   </div>
@@ -2136,9 +2149,6 @@ button { cursor: pointer; }
       </div>
     </div>
   </div>
-
-  <!-- Input fichier caché (import iOS) -->
-  <input type="file" id="file-input-hidden" style="display:none">
 
 </div><!-- #app -->
 
