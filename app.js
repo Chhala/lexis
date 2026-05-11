@@ -421,28 +421,46 @@ function closeModal(id) {
    SWIPE BAS → ACCUEIL (global)
 ───────────────────────────────────────────────────────────── */
 function initGlobalSwipeDown() {
-  let sy = 0, sx = 0, active = false;
+  let sy = 0, sx = 0, st = 0, active = false;
 
   document.addEventListener('touchstart', e => {
     sy = e.touches[0].clientY;
     sx = e.touches[0].clientX;
+    st = Date.now();
     active = true;
   }, { passive: true });
 
   document.addEventListener('touchend', e => {
     if (!active) return;
     active = false;
-    const dy = e.changedTouches[0].clientY - sy;
-    const dx = Math.abs(e.changedTouches[0].clientX - sx);
-    // Swipe vers le bas rapide (>80px), principalement vertical
-    if (dy > 80 && dx < 60) {
-      // Ne pas déclencher si on est sur un champ de saisie ou modal ouverte
-      const focused = document.activeElement;
-      if (focused && (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA')) return;
-      const modalOpen = document.querySelector('.modal-overlay.show');
-      if (modalOpen) return;
-      if (currentScreen !== 'home') navigateTo('home');
+    const dy       = e.changedTouches[0].clientY - sy;
+    const dx       = Math.abs(e.changedTouches[0].clientX - sx);
+    const elapsed  = Date.now() - st;
+    const velocity = dy / Math.max(elapsed, 1); // px/ms
+
+    // Critères stricts : distance >160px, principalement vertical, vitesse >0.6px/ms,
+    // geste rapide (<350ms) — exclut les scrolls normaux
+    if (dy < 160 || dx > 50 || velocity < 0.6 || elapsed > 350) return;
+
+    // Ignorer si champ actif ou modal ouverte
+    const focused = document.activeElement;
+    if (focused && (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA')) return;
+    const modalOpen = document.querySelector('.modal-overlay.show');
+    if (modalOpen) {
+      // Swipe bas ferme la popup flamme
+      const flameOpen = document.getElementById('flame-popup');
+      if (flameOpen && flameOpen.classList.contains('show')) {
+        closeModal('flame-popup');
+      }
+      return;
     }
+
+    // Ignorer si le touch vient d'une zone scrollable qui a du contenu au-dessus
+    const target = e.target;
+    const scrollParent = target.closest('.scroll, .scroll-full, .memo-scroll, .form-scroll, .restit-body, .qcm-body');
+    if (scrollParent && scrollParent.scrollTop > 10) return;
+
+    if (currentScreen !== 'home') navigateTo('home');
   }, { passive: true });
 }
 
@@ -850,6 +868,7 @@ function initSwipe(container) {
       if (swipedRowId && swipedRowId !== currentId) closeSwipe(swipedRowId);
       swipedRowId = currentId;
       if (main) main.style.transform = 'translateX(-96px)';
+      if (row) row.classList.add('swiped');
     } else {
       closeSwipe(currentId);
     }
@@ -866,6 +885,8 @@ function initSwipe(container) {
 function closeSwipe(id) {
   const main = document.querySelector(`#wrow-${id} .word-main`);
   if (main) main.style.transform = '';
+  const row = document.getElementById(`wrow-${id}`);
+  if (row) row.classList.remove('swiped');
   if (swipedRowId === id) swipedRowId = null;
 }
 

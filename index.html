@@ -824,7 +824,7 @@ button { cursor: pointer; }
 }
 .detail-themes { display: flex; flex-wrap: wrap; gap: 4px; }
 
-/* Swipe actions */
+/* Swipe actions — masquées par défaut, visibles uniquement après swipe gauche */
 .word-actions {
   position: absolute;
   right: 0; top: 0; bottom: 0;
@@ -832,6 +832,12 @@ button { cursor: pointer; }
   border-radius: 0 var(--radius-md) var(--radius-md) 0;
   overflow: hidden;
   z-index: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+.word-row.swiped .word-actions {
+  visibility: visible;
+  pointer-events: all;
 }
 .swipe-edit-btn, .swipe-arch-btn {
   display: flex;
