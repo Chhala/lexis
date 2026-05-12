@@ -1483,14 +1483,14 @@ function startMemoPhase() {
     const isMastered = w.status === 'maîtrisé';
     let borderClass = isReview ? ' review' : isMastered ? ' mastered' : '';
     const themeHtml = (w.themes && w.themes.length)
-      ? `<div class="memo-themes">${w.themes.map(t => `<span class="theme-chip">${t}</span>`).join(' ')}</div>`
+      ? w.themes.map(t => `<span class="theme-chip">${t}</span>`).join(' ')
       : '';
+    const natHtml = natureBadgeHtml(w.nature);
     return `<div class="memo-card${isAlt?' alt':' plain'}${borderClass}">
       <div class="memo-word">${w.mot}</div>
-      ${natureBadgeHtml(w.nature)}
+      <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center;margin-top:4px">${natHtml}${themeHtml}</div>
       <div class="memo-def"><strong>${w.definition}</strong></div>
       ${w.noteVariante ? `<div style="font-size:11px;color:var(--text-tertiary);font-style:italic;margin-top:4px">${w.noteVariante}</div>` : ''}
-      ${themeHtml}
     </div>`;
   }).join('');
 
@@ -1552,9 +1552,8 @@ function renderLearnQuestion() {
   const letterUsed    = s.hintUsed[s.idx] !== null;
   const qcmUsed       = s.qcmHintUsed[s.idx];
 
-  // Indice syllabe : n'afficher que si pas encore utilisé
-  const syl = firstSyllable(w.mot);
-  hintLetterBtn.textContent = letterUsed ? (syl + '…') : (syl + '…');
+  // Indice syllabe : afficher "ab…" tant que pas utilisé, syllabe après usage
+  hintLetterBtn.textContent = letterUsed ? (firstSyllable(w.mot) + '…') : 'ab…';
   hintLetterBtn.className   = `hint-pill${letterUsed?' used':''}${qcmUsed?' disabled':''}`;
   hintLetterBtn.disabled    = qcmUsed || letterUsed; // usage unique
 
@@ -1613,9 +1612,12 @@ function handleHintQcm() {
   const pool   = buildQcmChoices(w, false);
   const inline = document.getElementById('qcm-inline');
 
-  inline.innerHTML = pool.map(c =>
-    `<button class="qcm-choice" data-id="${c.id}" data-mot="${c.mot}">${c.mot}</button>`
-  ).join('');
+  // QCM inline : définition d'abord, puis les propositions
+  const maskedDef = maskWord(w.definition, w.mot);
+  inline.innerHTML = `<div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px;padding-bottom:10px;border-bottom:var(--border-w) solid var(--border-color)"><strong>${maskedDef}</strong></div>`
+    + pool.map(c =>
+      `<button class="qcm-choice" data-id="${c.id}" data-mot="${c.mot}">${c.mot}</button>`
+    ).join('');
   inline.classList.add('active');
   // Positionner en haut
   inline.style.order = '-1';
@@ -2398,18 +2400,15 @@ function bindEvents() {
 
   /* ── QCM : changement de mode ── */
   document.getElementById('qcm-mode-btn').addEventListener('click', () => {
-    // Ignore le mot actuel, change le mode, démarre une nouvelle question
+    // Changer le mode sans avancer — re-render la question courante
     qcmSession.mode = qcmSession.mode === 'mot-def' ? 'def-mot' : 'mot-def';
     const inversed  = qcmSession.mode === 'def-mot';
     document.getElementById('qcm-mode-btn').className = `mode-btn${inversed?' inversed':''}`;
-    // Avancer au prochain mot (mot actuel ignoré)
-    qcmSession.answers.push({ wordId: qcmSession.words[qcmSession.idx]?.id, correct: null, elapsed: 0, skipped: true });
-    qcmSession.idx++;
-    if (qcmSession.idx >= qcmSession.words.length) {
-      endQcm();
-    } else {
-      renderQcmQuestion();
-    }
+    // Re-rendre la même question dans le nouveau mode (réponse remise à zéro)
+    qcmSession.answered     = false;
+    qcmSession.waitingSwipe = false;
+    qcmSession.qStart       = Date.now();
+    renderQcmQuestion();
   });
 
   /* ── Apprentissage ── */
