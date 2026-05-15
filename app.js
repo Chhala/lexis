@@ -1678,16 +1678,24 @@ function handleAnswerValidate() {
 
 function initLearnSwipe() {
   const screen = document.getElementById('screen-learn');
-  let sx = 0;
+  let sx = 0, sy = 0;
 
   // Supprimer les anciens listeners pour éviter les doublons
   screen._learnSwipeTouchStart && screen.removeEventListener('touchstart', screen._learnSwipeTouchStart);
   screen._learnSwipeTouchEnd   && screen.removeEventListener('touchend',   screen._learnSwipeTouchEnd);
 
-  screen._learnSwipeTouchStart = e => { sx = e.touches[0].clientX; };
-  screen._learnSwipeTouchEnd   = e => {
-    const dx = e.changedTouches[0].clientX - sx;
-    if (dx < -60 && learnSession.waitingSwipe) {
+  screen._learnSwipeTouchStart = e => {
+    sx = e.touches[0].clientX;
+    sy = e.touches[0].clientY;
+  };
+  screen._learnSwipeTouchEnd = e => {
+    if (!learnSession.waitingSwipe) return;
+    const dx = Math.abs(e.changedTouches[0].clientX - sx);
+    const dy = Math.abs(e.changedTouches[0].clientY - sy);
+    // Tap (peu de déplacement) OU swipe gauche : avancer
+    const isTap       = dx < 15 && dy < 15;
+    const isSwipeLeft = e.changedTouches[0].clientX - sx < -40;
+    if (isTap || isSwipeLeft) {
       learnSession.waitingSwipe = false;
       advanceLearn();
     }
