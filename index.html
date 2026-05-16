@@ -360,17 +360,14 @@ button { cursor: pointer; }
 .day-btn.on  { background: var(--color-primary); color: #fff; }
 .day-btn.off { background: #EFEFEF; color: var(--text-tertiary); }
 
-.volume-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: var(--border-w) solid var(--border-color); }
-.volume-slider { flex: 1; -webkit-appearance: none; height: 4px; border-radius: 2px; background: var(--border-color-mid); outline: none; }
-.volume-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--color-primary); cursor: pointer; }
-.volume-val { font-size: 12px; font-weight: 600; color: var(--color-primary); min-width: 32px; text-align: right; }
+
 
 /* Slider ratio Flash */
 .ratio-row { display: flex; flex-direction: column; gap: 8px; padding: 11px 12px; border-bottom: var(--border-w) solid var(--border-color); }
 .ratio-row:last-child { border-bottom: none; }
 .ratio-slider { width: 100%; -webkit-appearance: none; height: 4px; border-radius: 2px; background: var(--border-color-mid); outline: none; }
 .ratio-slider::-webkit-slider-thumb { -webkit-appearance: none; width: 18px; height: 18px; border-radius: 50%; background: var(--color-primary); cursor: pointer; }
-.ratio-label { font-size: 11px; color: var(--color-primary); font-weight: 500; }
+.ratio-label { font-size: 11px; color: var(--text-tertiary); font-weight: 400; }
 
 .speaker-btn { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; cursor: pointer; }
 .speaker-btn svg { width: 20px; height: 20px; stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; }
@@ -526,7 +523,7 @@ button { cursor: pointer; }
 .fb-correct { background: var(--color-success-soft); border: var(--border-w) solid var(--color-success); color: #27500A; }
 
 /* Zone évocation (mode inversé apprentissage) */
-#evoke-zone { display: none; flex-direction: column; gap: 10px; }
+#evoke-zone { flex-direction: column; gap: 10px; }
 .evoke-card { background: var(--bg-secondary); border: var(--border-w) solid var(--border-color); border-radius: var(--radius-md); padding: 14px; text-align: center; }
 .evoke-word { font-size: 28px; font-weight: 500; color: var(--text-primary); font-family: var(--font-display); margin-bottom: 6px; }
 .evoke-def-card { background: var(--color-success-soft); border: var(--border-w) solid var(--color-success); border-radius: var(--radius-md); padding: 12px; }
@@ -775,7 +772,7 @@ button { cursor: pointer; }
       </div>
       <div class="sec-label">Activité — 7 derniers jours</div>
       <div class="card" style="padding:12px">
-        <svg id="histo-svg" width="100%" height="110" viewBox="0 0 294 110" preserveAspectRatio="none"></svg>
+        <svg id="histo-svg" width="100%" height="128" viewBox="0 0 294 128" preserveAspectRatio="none"></svg>
       </div>
       <div class="sec-label">Sessions</div>
       <div class="sessions-row">
@@ -831,8 +828,8 @@ button { cursor: pointer; }
           </div>
         </div>
         <div class="ratio-row">
-          <div><div class="row-label">Ratio évocation / saisie</div><div class="ratio-label" id="learn-ratio-label">25% évocation · 75% saisie</div></div>
-          <input type="range" class="ratio-slider" id="learn-ratio-slider" min="0" max="100" step="25" value="25">
+          <div><div class="row-label">Ratio</div><div class="ratio-label" id="learn-ratio-label">25% évocation · 75% saisie</div></div>
+          <input type="range" class="ratio-slider" id="learn-ratio-slider" min="0" max="100" step="25" value="75">
         </div>
       </div>
 
@@ -855,11 +852,7 @@ button { cursor: pointer; }
 
       <div class="sec-label">Son</div>
       <div class="card-rows">
-        <div class="volume-row">
-          <div class="row-label" style="flex-shrink:0">Volume</div>
-          <input type="range" class="volume-slider" id="volume-slider" min="0" max="100" value="50">
-          <span class="volume-val" id="volume-val">50%</span>
-        </div>
+
         <div class="card-row">
           <div class="row-label">Bonne réponse</div>
           <div class="speaker-btn on" id="snd-correct-btn">
@@ -912,7 +905,7 @@ button { cursor: pointer; }
     <div class="flash-hdr">
       <button class="icon-btn" id="flash-back-btn">
         <svg viewBox="0 0 24 24" stroke="var(--text-secondary)" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/>
+          <path d="M15 18l-6-6 6-6"/>
         </svg>
       </button>
       <div class="flash-counter" id="flash-counter">1 / 10</div>

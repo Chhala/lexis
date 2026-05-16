@@ -42,7 +42,7 @@ const BADGES_DIVERS = [
 
 const DEFAULT_SETTINGS = {
   wordsPerSession: 12, reviewRatioPct: 20, masteredRatioPct: 10,
-  learnRatioPct: 25,
+  learnRatioPct: 75,
   flashWordsPerSession: 10, flashRatioPct: 75,
   validDays: [1,2,3,4,5],
   soundCorrect: true, soundWrong: true, soundRewards: true,
@@ -1127,6 +1127,14 @@ function renderFlashQuestion() {
   document.getElementById('flash-counter').textContent = `${s.idx+1} / ${tot}`;
   document.getElementById('flash-progress').style.width = `${(s.idx/tot)*100}%`;
 
+  // Bouton gauche : maison si question 1, flèche sinon
+  const backBtn = document.getElementById('flash-back-btn');
+  if (s.idx === 0) {
+    backBtn.innerHTML = `<svg viewBox="0 0 24 24" stroke="var(--text-secondary)" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`;
+  } else {
+    backBtn.innerHTML = `<svg viewBox="0 0 24 24" stroke="var(--text-secondary)" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>`;
+  }
+
   // Afficher la question
   if (mode === 'mot-def') {
     document.getElementById('flash-q-label').textContent  = 'Mot';
@@ -1258,6 +1266,8 @@ function showFlashPrevious() {
 
   // Afficher question précédente
   document.getElementById('flash-counter').textContent = `${prevIdx+1} / ${s.words.length} — déjà répondu`;
+  // Flèche gauche en lecture seule
+  document.getElementById('flash-back-btn').innerHTML = `<svg viewBox="0 0 24 24" stroke="var(--text-secondary)" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 18l-6-6 6-6"/></svg>`;
 
   if (prevMode === 'mot-def') {
     document.getElementById('flash-q-label').textContent  = 'Mot';
@@ -1431,8 +1441,9 @@ function startLearn() {
   const pool = buildLearnPool();
   if (!pool.length) { showToast('Aucun mot disponible'); return; }
 
-  // evokeRatio : % de mots en mode évocation (réglette 0-100%, défaut 25%)
-  const evokeRatio = (settings.learnRatioPct !== undefined ? settings.learnRatioPct : 25) / 100;
+  // learnRatioPct = % saisie (défaut 75%). Évocation = 100 - learnRatioPct
+  const writeRatio = (settings.learnRatioPct !== undefined ? settings.learnRatioPct : 75) / 100;
+  const evokeRatio = 1 - writeRatio;
 
   learnSession = {
     words:    pool,
@@ -1561,16 +1572,15 @@ function renderLearnWrite(w, s) {
   hintLetterBtn.style.display = '';
 
   // Masquer la zone évocation
-  document.getElementById('evoke-zone').style.display  = 'none';
+  document.getElementById('evoke-zone').style.display      = 'none';
   document.getElementById('learn-def-block').style.display = '';
 
   setTimeout(() => { input.focus(); }, 100);
 }
 
 function renderLearnEvoke(w, s) {
-  // Mode évocation : on montre le mot, l'utilisateur évoque la définition mentalement
-  // Puis révèle et juge
-  document.getElementById('evoke-zone').style.display      = '';
+  // Mode évocation : on montre le mot, l'utilisateur évoque la définition
+  document.getElementById('evoke-zone').style.display      = 'flex';
   document.getElementById('learn-def-block').style.display = 'none';
   document.getElementById('answer-input').style.display    = 'none';
   document.getElementById('validate-btn').style.display    = 'none';
@@ -1969,7 +1979,7 @@ function fmtDate(str) {
 function drawHisto(sessions) {
   const svg = document.getElementById('histo-svg');
   const W = 294, barW = 30, barGap = 12, barH = 60;
-  const statusY = 68, labelY = 84, legendY = 100;
+  const statusY = 72, labelY = 90, legendY = 108;
 
   const today   = new Date();
   const dow     = today.getDay();
@@ -2054,17 +2064,13 @@ function refreshSettings() {
   document.getElementById('review-ratio-val').textContent   = `${settings.reviewRatioPct || 20}%`;
   document.getElementById('mastered-ratio-val').textContent = `${settings.masteredRatioPct || 10}%`;
 
-  const learnRatio = settings.learnRatioPct !== undefined ? settings.learnRatioPct : 25;
+  const learnRatio = settings.learnRatioPct !== undefined ? settings.learnRatioPct : 75;
   refreshLearnRatioSlider(learnRatio);
 
   document.getElementById('flash-words-val').textContent = settings.flashWordsPerSession || 10;
 
   const flashRatio = settings.flashRatioPct !== undefined ? settings.flashRatioPct : 75;
   refreshFlashRatioSlider(flashRatio);
-
-  const vol = settings.soundVolume !== undefined ? settings.soundVolume : 0.5;
-  document.getElementById('volume-slider').value    = Math.round(vol * 100);
-  document.getElementById('volume-val').textContent = `${Math.round(vol * 100)}%`;
 
   refreshSoundBtns();
   refreshWordsModifiedMsg();
@@ -2083,13 +2089,14 @@ function refreshLearnRatioSlider(ratio) {
 }
 
 function updateLearnRatioLabel(ratio) {
+  // ratio = % saisie
   const lbl = document.getElementById('learn-ratio-label');
   if (!lbl) return;
-  const evPct   = ratio;
-  const writePct = 100 - ratio;
-  if (evPct === 0)        lbl.textContent = '100% saisie';
+  const writePct = ratio;
+  const evPct    = 100 - ratio;
+  if (writePct === 100) lbl.textContent = '100% saisie';
   else if (evPct === 100) lbl.textContent = '100% évocation';
-  else lbl.textContent = `${evPct}% évocation · ${writePct}% saisie`;
+  else lbl.textContent = `${writePct}% saisie · ${evPct}% évocation`;
 }
 
 function refreshFlashRatioSlider(ratio) {
@@ -2300,7 +2307,13 @@ function bindEvents() {
   });
 
   /* ── Flash ── */
-  document.getElementById('flash-back-btn').addEventListener('click', () => navigateTo('home'));
+  document.getElementById('flash-back-btn').addEventListener('click', () => {
+    if (flashSession.idx === 0) {
+      navigateTo('home');
+    } else {
+      showFlashPrevious();
+    }
+  });
   document.getElementById('flash-hint-btn').addEventListener('click', handleFlashHint);
   document.getElementById('flash-reveal-btn').addEventListener('click', revealFlashAnswer);
   document.getElementById('flash-judge-wrong').addEventListener('click', () => judgeFlash(false));
@@ -2393,7 +2406,7 @@ function bindEvents() {
     e.target.value = snapped;
     settings.learnRatioPct = snapped;
     saveSetting('learnRatioPct', snapped);
-    updateLearnRatioLabel(snapped);
+    updateLearnRatioLabel(snapped); // snapped = % saisie
   });
 
   // Slider ratio Flash
@@ -2404,15 +2417,6 @@ function bindEvents() {
     settings.flashRatioPct = snapped;
     saveSetting('flashRatioPct', snapped);
     updateFlashRatioLabel(snapped);
-  });
-
-  // Volume
-  document.getElementById('volume-slider').addEventListener('input', e => {
-    const v = parseInt(e.target.value) / 100;
-    settings.soundVolume = v;
-    saveSetting('soundVolume', v);
-    setMasterVolume(v);
-    document.getElementById('volume-val').textContent = `${Math.round(v*100)}%`;
   });
 
   // Sons
