@@ -22,5 +22,9 @@
       "purpose": "any maskable"
     }
   ],
-  "categories": ["education", "lifestyle"]
+  "categories": [
+    "education",
+    "lifestyle"
+  ],
+  "version": "1.2"
 }

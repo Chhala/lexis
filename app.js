@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════════════
-   LEXIS — app.js  v1.0
+   LEXIS — app.js  v1.2
    Logique complète : IndexedDB · Sessions · Récompenses · Stats
 ═══════════════════════════════════════════════════════════════ */
 
@@ -23,31 +23,39 @@ const BADGES_SERIE = [
   { id:'serie_365', label:'🏆 Résolu',       desc:'365 jours consécutifs', days:365, joker:true  },
 ];
 const BADGES_MAITRISE = [
-  { id:'m_20',  label:'🌿 Novice',      desc:'20% des mots maîtrisés',  pct:20  },
-  { id:'m_40',  label:'📖 Lettré',      desc:'40% des mots maîtrisés',  pct:40  },
-  { id:'m_60',  label:'🔬 Savant',      desc:'60% des mots maîtrisés',  pct:60  },
-  { id:'m_80',  label:'💎 Érudit',      desc:'80% des mots maîtrisés',  pct:80  },
+  { id:'m_25',  label:'📖 Lettré',      desc:'25% des mots maîtrisés',  pct:25  },
+  { id:'m_50',  label:'🔬 Savant',      desc:'50% des mots maîtrisés',  pct:50  },
+  { id:'m_75',  label:'💎 Érudit',      desc:'75% des mots maîtrisés',  pct:75  },
   { id:'m_100', label:'👑 Lexicologue', desc:'100% des mots maîtrisés', pct:100 },
 ];
-const BADGES_MOTIV = [
-  { id:'perfect',    label:'⭐ Session parfaite', desc:'100% sans indice QCM sur ≥10 mots' },
-  { id:'infaillible',label:'🎯 Infaillible',      desc:'5 sessions parfaites consécutives'  },
-  { id:'redemption', label:'⚔️ Rédemption',        desc:'Maîtriser un mot raté 5× ou plus'  },
+const BADGES_LEARN = [
+  { id:'perfect',     label:'⭐ Session parfaite', desc:'100% correct en apprentissage'         },
+  { id:'infaillible', label:'🎯 Infaillible',      desc:'5 sessions parfaites consécutives'     },
+  { id:'redemption',  label:'⚔️ Rédemption',       desc:'Maîtriser un mot raté 5× ou plus'      },
+];
+const BADGES_FLASH = [
+  { id:'flash_perfect',   label:'🌪 Session parfaite',  desc:'100% correct en Flash'                    },
+  { id:'flash_electrique',label:'⚡ Électrique',          desc:'5 sessions Flash dans la même journée'    },
+];
+const BADGES_DIVERS = [
+  // redemption déplacé ici depuis learn (affiché dans Divers)
 ];
 
 const DEFAULT_SETTINGS = {
   wordsPerSession: 12, reviewRatioPct: 20, masteredRatioPct: 10,
-  qcmWordsPerSession: 10, qcmChoicesCount: 4, qcmInverseMode: false,
+  learnInverseMode: false,
+  flashWordsPerSession: 10, flashRatioPct: 75, flashInverseMode: false,
   validDays: [1,2,3,4,5],
   soundCorrect: true, soundWrong: true, soundRewards: true,
   soundVolume: 0.5,
   currentStreak: 0, longestStreak: 0, jokers: 0,
   badges: [], lastExportDate: null, lastWordExportDate: null,
   perfectStreak: 0, redemptionDone: false,
-  qcmSessionCount: 0, lastLearningDate: null,
+  flashSessionCount: 0, lastLearningDate: null,
   masteredSnapshots: [],
   wordsBaseVersion: null,
   lastWordsExportVersion: null,
+  flashSessionsToday: 0, flashSessionsDate: null,
 };
 
 /* ─────────────────────────────────────────────────────────────
@@ -58,16 +66,18 @@ let settings = { ...DEFAULT_SETTINGS };
 let allWords = [];
 let pendingRewards = [];
 
-// État QCM
-let qcmSession = {
+// État Flash
+let flashSession = {
   words:[], idx:0, answers:[], mode:'mot-def', startTime:0,
-  answered:false, history:[], waitingSwipe:false
+  revealed:false, history:[],
 };
 
 // État Apprentissage
 let learnSession = {
   words:[], idx:0, phase:'memo',
   results:[], hintUsed:[], qcmHintUsed:[],
+  // Pour chaque mot : 'write' ou 'evoke'
+  wordMode:[],
   scrolledAll:false,
   perfectSoFar:true, usedQcmHint:false,
   startTimes:[], waitingSwipe:false,
@@ -78,13 +88,12 @@ let currentScreen  = 'home';
 let wordFormMode   = 'create';
 let editingWordId  = null;
 let swipedRowId    = null;
-let wordsFromReview = false; // flag: arrivée depuis "à revoir"
+let wordsFromReview = false;
 
 // Recherche / filtres
-let searchMode   = 'mot';
-let activeFilter = 'all';
+let searchMode    = 'mot';
 let activeFilters = new Set(['all']);
-let searchQuery  = '';
+let searchQuery   = '';
 
 /* ─────────────────────────────────────────────────────────────
    INDEXEDDB
@@ -178,7 +187,6 @@ async function loadWords() {
     try {
       const resp = await fetch('words.json');
       const raw  = await resp.json();
-      // Extraire le sentinel de version si présent
       const sentinel = raw.find(item => item.__lexis_version__);
       if (sentinel) {
         const ver = sentinel.__lexis_version__;
@@ -214,7 +222,6 @@ function generateId() {
   });
 }
 
-/* ── Levenshtein ── */
 function levenshtein(a, b) {
   a = a.toLowerCase(); b = b.toLowerCase();
   if (a === b) return 0;
@@ -251,7 +258,6 @@ function maskWord(text, mot) {
   return result;
 }
 
-/* ── Badge nature ── */
 function natureBadgeClass(nat) {
   if (!nat) return 'badge-n';
   if (nat.includes('n.m')) return 'badge-nm';
@@ -267,21 +273,14 @@ function natureBadgeHtml(natureArr) {
   return natureArr.map(n => `<span class="badge ${natureBadgeClass([n])}">${n}</span>`).join(' ');
 }
 
-/* ── Première syllabe ── */
 function firstSyllable(word) {
   if (!word) return '';
   const w = word.toLowerCase();
-  // Voyelles
   const V = 'aeéèêëiîïoôuùûüy';
-  // Chercher la fin de la première syllabe : consonne(s) + voyelle(s) + consonne(s) suivie d'une voyelle
   let i = 0;
-  // Passer les consonnes initiales
   while (i < w.length && !V.includes(w[i])) i++;
-  // Passer les voyelles
   while (i < w.length && V.includes(w[i])) i++;
-  // Passer jusqu'à la prochaine voyelle (fin de syllabe)
   const peak = i;
-  // Si on est à la fin ou presque, retourner au moins 2 chars
   if (peak <= 1) return word.slice(0, Math.min(2, word.length));
   return word.slice(0, peak);
 }
@@ -308,7 +307,6 @@ function setMasterVolume(v) {
 }
 
 function playTone(type) {
-  // Sons désactivés en QCM et Apprentissage selon les réglages
   if (type === 'correct' && !settings.soundCorrect) return;
   if (type === 'wrong'   && !settings.soundWrong)   return;
   if (type === 'reward'  && !settings.soundRewards)  return;
@@ -317,7 +315,6 @@ function playTone(type) {
     const c   = getAudioCtx();
     const vol = settings.soundVolume !== undefined ? settings.soundVolume : 0.5;
     if (gainMaster) gainMaster.gain.value = vol;
-
     const dest = gainMaster || c.destination;
 
     if (type === 'correct') {
@@ -328,7 +325,6 @@ function playTone(type) {
       g.gain.linearRampToValueAtTime(0.16, c.currentTime + 0.015);
       g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + 0.32);
       o.start(c.currentTime); o.stop(c.currentTime + 0.37);
-
     } else if (type === 'wrong') {
       [[330, 0], [262, 0.16]].forEach(([freq, t]) => {
         const o = c.createOscillator(), g = c.createGain();
@@ -339,7 +335,6 @@ function playTone(type) {
         g.gain.exponentialRampToValueAtTime(0.001, c.currentTime + t + 0.25);
         o.start(c.currentTime + t); o.stop(c.currentTime + t + 0.28);
       });
-
     } else if (type === 'reward') {
       [523, 659, 784, 1047].forEach((freq, i) => {
         const t = i * 0.1;
@@ -401,7 +396,7 @@ function showToast(msg) {
 }
 
 /* ─────────────────────────────────────────────────────────────
-   MODAL / OVERLAY
+   MODAL
 ───────────────────────────────────────────────────────────── */
 function openModal(id) {
   const el = document.getElementById(id);
@@ -418,7 +413,7 @@ function closeModal(id) {
 }
 
 /* ─────────────────────────────────────────────────────────────
-   SWIPE BAS → ACCUEIL (global)
+   SWIPE BAS → ACCUEIL
 ───────────────────────────────────────────────────────────── */
 function initGlobalSwipeDown() {
   let sy = 0, sx = 0, st = 0, active = false;
@@ -433,31 +428,24 @@ function initGlobalSwipeDown() {
   document.addEventListener('touchend', e => {
     if (!active) return;
     active = false;
-    const dy       = e.changedTouches[0].clientY - sy;
-    const dx       = Math.abs(e.changedTouches[0].clientX - sx);
-    const elapsed  = Date.now() - st;
-    const velocity = dy / Math.max(elapsed, 1); // px/ms
+    const dy      = e.changedTouches[0].clientY - sy;
+    const dx      = Math.abs(e.changedTouches[0].clientX - sx);
+    const elapsed = Date.now() - st;
+    const velocity= dy / Math.max(elapsed, 1);
 
-    // Critères stricts : distance >160px, principalement vertical, vitesse >0.6px/ms,
-    // geste rapide (<350ms) — exclut les scrolls normaux
     if (dy < 160 || dx > 50 || velocity < 0.6 || elapsed > 350) return;
 
-    // Ignorer si champ actif ou modal ouverte
     const focused = document.activeElement;
     if (focused && (focused.tagName === 'INPUT' || focused.tagName === 'TEXTAREA')) return;
     const modalOpen = document.querySelector('.modal-overlay.show');
     if (modalOpen) {
-      // Swipe bas ferme la popup flamme
       const flameOpen = document.getElementById('flame-popup');
-      if (flameOpen && flameOpen.classList.contains('show')) {
-        closeModal('flame-popup');
-      }
+      if (flameOpen && flameOpen.classList.contains('show')) closeModal('flame-popup');
       return;
     }
 
-    // Ignorer si le touch vient d'une zone scrollable qui a du contenu au-dessus
     const target = e.target;
-    const scrollParent = target.closest('.scroll, .scroll-full, .memo-scroll, .form-scroll, .restit-body, .qcm-body');
+    const scrollParent = target.closest('.scroll, .scroll-full, .memo-scroll, .form-scroll, .restit-body, .flash-body');
     if (scrollParent && scrollParent.scrollTop > 10) return;
 
     if (currentScreen !== 'home') navigateTo('home');
@@ -467,18 +455,18 @@ function initGlobalSwipeDown() {
 /* ─────────────────────────────────────────────────────────────
    NAVIGATION
 ───────────────────────────────────────────────────────────── */
-function navigateTo(screen, opts = {}) {
-  const hiddenNav = ['qcm','learn'];
+function navigateTo(screen) {
+  const hiddenNav = ['flash','learn'];
   document.getElementById('bottom-nav').style.display = hiddenNav.includes(screen) ? 'none' : '';
 
-  document.querySelectorAll('.screen, #screen-qcm, #screen-learn').forEach(s => {
+  document.querySelectorAll('.screen, #screen-flash, #screen-learn').forEach(s => {
     s.classList.remove('active');
     s.style.display = '';
   });
 
-  if (screen === 'qcm') {
-    document.getElementById('screen-qcm').style.display = 'flex';
-    document.getElementById('screen-qcm').classList.add('active');
+  if (screen === 'flash') {
+    document.getElementById('screen-flash').style.display = 'flex';
+    document.getElementById('screen-flash').classList.add('active');
   } else if (screen === 'learn') {
     document.getElementById('screen-learn').style.display = 'flex';
     document.getElementById('screen-learn').classList.add('active');
@@ -494,14 +482,13 @@ function navigateTo(screen, opts = {}) {
 
   if (screen === 'home')     refreshHome();
   if (screen === 'words') {
-    // Filtre "tous" par défaut sauf si redirigé depuis "à revoir"
     if (!wordsFromReview) {
       activeFilters = new Set(['all']);
       document.querySelectorAll('.filter-pill').forEach(p => {
         p.classList.toggle('active', p.dataset.filter === 'all');
       });
     } else {
-      wordsFromReview = false; // consommer le flag
+      wordsFromReview = false;
     }
     refreshWordList();
   }
@@ -530,7 +517,6 @@ function refreshHome() {
   const j = settings.jokers || 0;
   document.getElementById('streak-shield').textContent = j > 0 ? `🛡×${j}` : '';
 
-  const today = new Date();
   const done  = settings.lastLearningDate === todayStr();
   const total = settings.wordsPerSession || 12;
 
@@ -544,9 +530,10 @@ function refreshHome() {
   const days = ['Dim','Lun','Mar','Mer','Jeu','Ven','Sam'];
   const validDays = settings.validDays || [1,2,3,4,5];
   const labels = validDays.map(d => days[d]);
-  document.getElementById('hero-foot-right').textContent = labels.length === 5 && JSON.stringify(validDays) === JSON.stringify([1,2,3,4,5])
-    ? 'Lun – Ven'
-    : labels.join(', ');
+  document.getElementById('hero-foot-right').textContent =
+    labels.length === 5 && JSON.stringify(validDays) === JSON.stringify([1,2,3,4,5])
+      ? 'Lun – Ven'
+      : labels.join(', ');
 }
 
 async function refreshSuccessRate() {
@@ -570,9 +557,9 @@ function todayStr() {
    SÉRIE & JOKERS
 ───────────────────────────────────────────────────────────── */
 async function checkAndUpdateStreak(sessionDate) {
-  const last = settings.lastLearningDate;
-  let streak = settings.currentStreak || 0;
-  let longest= settings.longestStreak || 0;
+  const last   = settings.lastLearningDate;
+  let streak   = settings.currentStreak || 0;
+  let longest  = settings.longestStreak || 0;
 
   if (!last) {
     streak = 1;
@@ -598,16 +585,13 @@ async function checkAndUpdateStreak(sessionDate) {
   }
 
   if (streak > longest) longest = streak;
-
-  settings.currentStreak   = streak;
-  settings.longestStreak   = longest;
-  settings.lastLearningDate= sessionDate;
+  settings.currentStreak    = streak;
+  settings.longestStreak    = longest;
+  settings.lastLearningDate = sessionDate;
 
   const prevStreak = (last ? (settings.currentStreak - 1) : 0);
-  const newJokerFromStreak = Math.floor(streak/15) - Math.floor(prevStreak/15);
-  if (newJokerFromStreak > 0) {
-    settings.jokers = Math.min(5, (settings.jokers||0) + newJokerFromStreak);
-  }
+  const newJoker   = Math.floor(streak/15) - Math.floor(prevStreak/15);
+  if (newJoker > 0) settings.jokers = Math.min(5, (settings.jokers||0) + newJoker);
 
   await checkSerieBadges(streak);
   await saveSettings();
@@ -615,14 +599,12 @@ async function checkAndUpdateStreak(sessionDate) {
 }
 
 function showJokerBanner(msg) {
-  const banner = document.getElementById('joker-banner');
   document.getElementById('joker-banner-msg').textContent = msg;
-  banner.classList.add('show');
+  document.getElementById('joker-banner').classList.add('show');
 }
 
 function daysDiff(d1, d2) {
-  const a = new Date(d1), b = new Date(d2);
-  return Math.round((b - a) / 86400000);
+  return Math.round((new Date(d2) - new Date(d1)) / 86400000);
 }
 
 async function checkSerieBadges(streak) {
@@ -641,7 +623,7 @@ async function checkMaitriseBadges() {
   const active   = activeWords().length;
   const mastered = masteredWords().length;
   if (!active) return;
-  const pct = Math.round(mastered / active * 100);
+  const pct    = Math.round(mastered / active * 100);
   const badges = settings.badges || [];
   let newBadge = null;
   for (const b of BADGES_MAITRISE) {
@@ -656,14 +638,14 @@ async function checkMaitriseBadges() {
   if (newBadge) await saveSettings();
 }
 
-async function grantQcmJoker() {
-  settings.qcmSessionCount = (settings.qcmSessionCount||0) + 1;
-  if (settings.qcmSessionCount % 60 === 0) {
+async function grantFlashJoker() {
+  settings.flashSessionCount = (settings.flashSessionCount||0) + 1;
+  if (settings.flashSessionCount % 60 === 0) {
     settings.jokers = Math.min(5, (settings.jokers||0) + 1);
     await saveSettings();
     showToast('🛡 Joker gagné !');
   } else {
-    await saveSetting('qcmSessionCount', settings.qcmSessionCount);
+    await saveSetting('flashSessionCount', settings.flashSessionCount);
   }
 }
 
@@ -676,43 +658,55 @@ function openFlamePopup() {
   const jokers  = settings.jokers || 0;
   const badges  = settings.badges || [];
 
-  document.getElementById('popup-serie').textContent = `${streak} 🔥`;
-  document.getElementById('popup-best').textContent  = longest;
-  document.getElementById('popup-jokers').textContent= `🛡 Jokers disponibles : ${jokers} / 5`;
+  document.getElementById('popup-serie').textContent  = `${streak} 🔥`;
+  document.getElementById('popup-best').textContent   = longest;
+  document.getElementById('popup-jokers').textContent = `🛡 Jokers disponibles : ${jokers} / 5`;
 
-  const next = 15 - (streak % 15);
-  const nextFromSerie = next === 15 ? 15 : next;
-  const nextFromQcm   = 60 - ((settings.qcmSessionCount||0) % 60);
+  const nextFromSerie = 15 - (streak % 15);
+  const nextFromFlash = 60 - ((settings.flashSessionCount||0) % 60);
   document.getElementById('popup-next-joker').textContent =
-    `Prochain joker : +${nextFromSerie} jours de série ou ${nextFromQcm} sessions QCM`;
+    `Prochain joker : +${nextFromSerie === 15 ? 15 : nextFromSerie} jours de série ou ${nextFromFlash} sessions Flash`;
 
-  const allBadges = [...BADGES_SERIE, ...BADGES_MAITRISE, ...BADGES_MOTIV];
-  const active = activeWords().length;
+  const active   = activeWords().length;
   const mastered = masteredWords().length;
-  const pct = active ? Math.round(mastered/active*100) : 0;
+  const pct      = active ? Math.round(mastered/active*100) : 0;
 
-  const html = allBadges.map(b => {
-    const unlocked = badges.includes(b.id);
-    let progress = '';
-    if (b.days)  progress = unlocked ? 'débloqué' : `${streak} / ${b.days} jours`;
-    if (b.pct)   progress = unlocked ? 'débloqué' : `${pct}% / ${b.pct}%`;
-    if (!b.days && !b.pct) progress = unlocked ? 'débloqué' : '';
-    return `<div class="badge-item ${unlocked?'':'badge-locked'}">
-      <div class="badge-icon-wrap" style="background:${unlocked?'#EAF3DE':'#F0F0F0'}">${b.label.split(' ')[0]}</div>
-      <div>
-        <div class="badge-name">${b.label.split(' ').slice(1).join(' ')}</div>
-        <div class="badge-desc">${b.desc}${progress?' — '+progress:''}</div>
-      </div>
-      <div class="badge-check" style="color:${unlocked?'var(--color-success)':'var(--text-disabled)'}">${unlocked?'✓':'🔒'}</div>
-    </div>`;
-  }).join('');
+  // Rendu par catégories
+  const cats = [
+    { label:'Série',        badges: BADGES_SERIE   },
+    { label:'Maîtrise',     badges: BADGES_MAITRISE},
+    { label:'Apprentissage',badges: BADGES_LEARN   },
+    { label:'Flash',        badges: BADGES_FLASH   },
+    { label:'Divers',       badges: [BADGES_LEARN.find(b => b.id === 'redemption')] },
+  ];
+
+  let html = '';
+  cats.forEach(cat => {
+    const catBadges = cat.badges.filter(Boolean);
+    if (!catBadges.length) return;
+    html += `<div style="font-size:10px;font-weight:600;color:var(--text-tertiary);text-transform:uppercase;letter-spacing:.07em;margin:10px 0 4px">${cat.label}</div>`;
+    catBadges.forEach(b => {
+      const unlocked = badges.includes(b.id);
+      let progress = '';
+      if (b.days) progress = unlocked ? 'débloqué' : `${streak} / ${b.days} jours`;
+      if (b.pct)  progress = unlocked ? 'débloqué' : `${pct}% / ${b.pct}%`;
+      html += `<div class="badge-item ${unlocked?'':'badge-locked'}">
+        <div class="badge-icon-wrap" style="background:${unlocked?'#EAF3DE':'#F0F0F0'}">${b.label.split(' ')[0]}</div>
+        <div>
+          <div class="badge-name">${b.label.split(' ').slice(1).join(' ')}</div>
+          <div class="badge-desc">${b.desc}${progress?' — '+progress:''}</div>
+        </div>
+        <div class="badge-check" style="color:${unlocked?'var(--color-success)':'var(--text-disabled)'}">${unlocked?'✓':'🔒'}</div>
+      </div>`;
+    });
+  });
 
   document.getElementById('popup-badges').innerHTML = html;
   openModal('flame-popup');
 }
 
 /* ─────────────────────────────────────────────────────────────
-   LISTE DE MOTS — AFFICHAGE
+   LISTE DE MOTS
 ───────────────────────────────────────────────────────────── */
 function refreshWordList() {
   const q        = searchQuery.toLowerCase();
@@ -753,7 +747,6 @@ function refreshWordList() {
 
   const countActive = allWords.filter(w => !w.isArchived).length;
   document.getElementById('words-count').textContent = `${countActive.toLocaleString('fr')} mots`;
-
   renderWordList(filtered);
 }
 
@@ -765,10 +758,10 @@ function renderWordList(words) {
   }
 
   list.innerHTML = words.map(w => {
-    const natHtml = natureBadgeHtml(w.nature);
-    const dot = w.status === 'à_revoir'  ? '<div class="word-status-dot status-dot-review"></div>'
-              : w.status === 'maîtrisé'  ? '<div class="word-status-dot status-dot-mastered"></div>'
-              : '';
+    const natHtml   = natureBadgeHtml(w.nature);
+    const dot       = w.status === 'à_revoir' ? '<div class="word-status-dot status-dot-review"></div>'
+                    : w.status === 'maîtrisé' ? '<div class="word-status-dot status-dot-mastered"></div>'
+                    : '';
     const archClass = w.isArchived ? ' archived' : '';
     const themeHtml = (w.themes||[]).map(t => `<span class="theme-chip">${t}</span>`).join(' ');
     const noteHtml  = w.noteVariante ? `<div class="detail-note">${w.noteVariante}</div>` : '';
@@ -812,25 +805,18 @@ function renderWordList(words) {
 }
 
 function toggleWordRow(id) {
-  // Fermer swipe si ouvert — et si le mot swipé est le même, ne pas ouvrir
-  if (swipedRowId === id) {
-    closeSwipe(swipedRowId);
-    return;
-  }
+  if (swipedRowId === id) { closeSwipe(swipedRowId); return; }
   if (swipedRowId) closeSwipe(swipedRowId);
-
   document.querySelectorAll('.word-row.expanded').forEach(r => {
     if (r.id !== `wrow-${id}`) {
       r.classList.remove('expanded');
       r.querySelector('.word-main').style.transform = '';
     }
   });
-
   const row = document.getElementById(`wrow-${id}`);
   if (row) row.classList.toggle('expanded');
 }
 
-/* ── Swipe ── */
 function initSwipe(container) {
   let startX = 0, startY = 0, currentId = null, isDragging = false;
 
@@ -857,14 +843,11 @@ function initSwipe(container) {
 
   container.addEventListener('touchend', e => {
     if (!currentId || !isDragging) return;
-    const dx = e.changedTouches[0].clientX - startX;
+    const dx  = e.changedTouches[0].clientX - startX;
     const main = document.querySelector(`#wrow-${currentId} .word-main`);
+    const row  = document.getElementById(`wrow-${currentId}`);
     if (dx < -40) {
-      // Fermer l'expansion si le mot est développé
-      const row = document.getElementById(`wrow-${currentId}`);
-      if (row && row.classList.contains('expanded')) {
-        row.classList.remove('expanded');
-      }
+      if (row && row.classList.contains('expanded')) row.classList.remove('expanded');
       if (swipedRowId && swipedRowId !== currentId) closeSwipe(swipedRowId);
       swipedRowId = currentId;
       if (main) main.style.transform = 'translateX(-96px)';
@@ -876,9 +859,7 @@ function initSwipe(container) {
   });
 
   document.addEventListener('click', e => {
-    if (swipedRowId && !e.target.closest(`#wrow-${swipedRowId}`)) {
-      closeSwipe(swipedRowId);
-    }
+    if (swipedRowId && !e.target.closest(`#wrow-${swipedRowId}`)) closeSwipe(swipedRowId);
   });
 }
 
@@ -894,10 +875,7 @@ async function toggleArchive(id) {
   const w = allWords.find(x => x.id === id);
   if (!w) return;
   w.isArchived = !w.isArchived;
-  if (!w.isArchived) {
-    w.status = 'nouveau';
-    w.consecutiveCorrect = 0;
-  }
+  if (!w.isArchived) { w.status = 'nouveau'; w.consecutiveCorrect = 0; }
   await updateWord(w);
   refreshWordList();
   showToast(w.isArchived ? 'Mot archivé' : 'Mot restauré');
@@ -908,8 +886,6 @@ async function toggleArchive(id) {
 ───────────────────────────────────────────────────────────── */
 let formThemes = [];
 let selectedNatures = new Set();
-
-// Thèmes exclus du formulaire de création/édition
 const THEMES_SYSTEM = ['à_revoir','maîtrisé','ajouté','archivé'];
 
 function openWordForm(id = null) {
@@ -924,7 +900,6 @@ function openWordForm(id = null) {
   document.getElementById('form-note').value  = '';
   document.getElementById('dyn-list').style.display = 'none';
   document.getElementById('dyn-list').innerHTML = '';
-
   document.querySelectorAll('.nat-btn').forEach(b => b.classList.remove('sel'));
 
   if (id) {
@@ -946,7 +921,6 @@ function openWordForm(id = null) {
   updateFormSaveBtn();
 
   if (swipedRowId) closeSwipe(swipedRowId);
-
   const wordList = document.querySelector('#screen-words .scroll');
   if (wordList) wordList.style.display = 'none';
   document.getElementById('word-form').classList.add('active');
@@ -958,19 +932,17 @@ function closeWordForm() {
   const wordList = document.querySelector('#screen-words .scroll');
   if (wordList) wordList.style.display = '';
   editingWordId = null;
-  searchQuery = '';
+  searchQuery   = '';
   document.getElementById('search-input').value = '';
   refreshWordList();
 }
 
 function renderFormThemes() {
   const row = document.getElementById('theme-row');
-  const addBtn = `<button class="theme-add-btn" id="theme-add-btn">+</button>`;
-  const chips  = formThemes.map(t =>
+  const chips = formThemes.map(t =>
     `<span class="theme-chip-del">${t}<span class="del-x" data-theme="${t}">×</span></span>`
   ).join('');
-  row.innerHTML = chips + addBtn;
-
+  row.innerHTML = chips + `<button class="theme-add-btn" id="theme-add-btn">+</button>`;
   row.querySelectorAll('.del-x').forEach(x => {
     x.addEventListener('click', () => {
       formThemes = formThemes.filter(t => t !== x.dataset.theme);
@@ -983,15 +955,10 @@ function renderFormThemes() {
 function updateFormSaveBtn() {
   const mot = document.getElementById('form-mot').value.trim();
   const def = document.getElementById('form-def').value.trim();
-
   const existing = allWords.find(w =>
-    !w.isArchived &&
-    w.mot.toLowerCase() === mot.toLowerCase() &&
-    w.id !== editingWordId
+    !w.isArchived && w.mot.toLowerCase() === mot.toLowerCase() && w.id !== editingWordId
   );
-
-  const valid = mot.length > 0 && def.length > 0 && !existing;
-  document.getElementById('form-save-btn').disabled = !valid;
+  document.getElementById('form-save-btn').disabled = !(mot.length > 0 && def.length > 0 && !existing);
 }
 
 function updateDynList(query) {
@@ -999,32 +966,25 @@ function updateDynList(query) {
     document.getElementById('dyn-list').style.display = 'none';
     return;
   }
-  const q = query.toLowerCase();
+  const q      = query.toLowerCase();
   const exact  = allWords.filter(w => !w.isArchived && w.mot.toLowerCase().startsWith(q)).slice(0,5);
   const approx = findApprox(query, 4);
-  const dynEl = document.getElementById('dyn-list');
+  const dynEl  = document.getElementById('dyn-list');
 
   if (!exact.length && !approx.length) { dynEl.style.display = 'none'; return; }
 
   let html = '';
   exact.forEach(w => {
-    html += `<div class="dyn-item" data-word="${w.mot}">
-      <span class="dyn-word">${w.mot}</span>
-      ${natureBadgeHtml(w.nature)}
-    </div>`;
+    html += `<div class="dyn-item" data-word="${w.mot}"><span class="dyn-word">${w.mot}</span>${natureBadgeHtml(w.nature)}</div>`;
   });
   approx.forEach(w => {
     if (!exact.find(e => e.id === w.id)) {
-      html += `<div class="dyn-item dyn-approx" data-word="${w.mot}">
-        <span class="dyn-word">${w.mot}</span>
-        <span style="font-size:11px;color:var(--color-warning);font-style:italic">approchant</span>
-      </div>`;
+      html += `<div class="dyn-item dyn-approx" data-word="${w.mot}"><span class="dyn-word">${w.mot}</span><span style="font-size:11px;color:var(--color-warning);font-style:italic">approchant</span></div>`;
     }
   });
 
   dynEl.innerHTML = html;
   dynEl.style.display = html ? '' : 'none';
-
   dynEl.querySelectorAll('.dyn-item').forEach(el => {
     el.addEventListener('click', () => {
       document.getElementById('form-mot').value = el.dataset.word;
@@ -1038,18 +998,15 @@ async function saveWordForm() {
   const mot  = document.getElementById('form-mot').value.trim();
   const def  = document.getElementById('form-def').value.trim();
   const note = document.getElementById('form-note').value.trim();
-
   if (!mot || !def) return;
 
   if (wordFormMode === 'create') {
     const newWord = {
-      id: generateId(),
-      mot, definition: def, noteVariante: note,
+      id: generateId(), mot, definition: def, noteVariante: note,
       nature: [...selectedNatures],
       pronunciationHint: '', isPrefix: selectedNatures.has('préf.') || selectedNatures.has('suff.'),
       status: 'nouveau', consecutiveCorrect: 0, errorCount: 0,
-      lastSeenDate: null, themes: [...formThemes],
-      isUserCreated: true, isArchived: false,
+      lastSeenDate: null, themes: [...formThemes], isUserCreated: true, isArchived: false,
     };
     allWords.push(newWord);
     await dbPut('words', newWord);
@@ -1101,7 +1058,6 @@ function openThemePicker() {
 
 function renderThemesGrid(filter) {
   const grid = document.getElementById('themes-grid');
-  // Exclure les thèmes système
   const displayThemes = THEMES_ALL.filter(t => !THEMES_SYSTEM.includes(t));
   grid.innerHTML = displayThemes.map(t => {
     const disabled = formThemes.includes(t);
@@ -1119,256 +1075,293 @@ function renderThemesGrid(filter) {
 }
 
 /* ─────────────────────────────────────────────────────────────
-   QCM — même nature dans les choix
+   MODE FLASH — SESSION
 ───────────────────────────────────────────────────────────── */
-function buildQcmChoices(correct, inversed) {
-  const pool = activeWords().filter(w => w.id !== correct.id);
-  const n    = (settings.qcmChoicesCount || 4) - 1;
+function buildFlashPool() {
+  const active   = activeWords();
+  const mastered = active.filter(w => w.status === 'maîtrisé');
+  const others   = active.filter(w => w.status !== 'maîtrisé');
 
-  // Priorité : mots de même nature principale
-  const mainNature = correct.nature && correct.nature[0];
-  const sameNature = mainNature
-    ? pool.filter(w => w.nature && w.nature.includes(mainNature))
-    : [];
-  const others = pool.filter(w => !sameNature.find(s => s.id === w.id));
+  const total      = settings.flashWordsPerSession || 10;
+  const mastRatio  = 0.10; // 10% de mots maîtrisés
+  const nMastered  = Math.min(Math.round(total * mastRatio), mastered.length);
+  const nOthers    = Math.min(total - nMastered, others.length);
 
-  let distractors = shuffleArray(sameNature).slice(0, n);
-  if (distractors.length < n) {
-    distractors = [...distractors, ...shuffleArray(others).slice(0, n - distractors.length)];
-  }
-
-  return shuffleArray([correct, ...distractors]);
+  return shuffleArray([
+    ...shuffleArray(mastered).slice(0, nMastered),
+    ...shuffleArray(others).slice(0, nOthers),
+  ]);
 }
 
-/* ─────────────────────────────────────────────────────────────
-   QCM — SESSION
-───────────────────────────────────────────────────────────── */
-function startQcm() {
-  const pool    = activeWords();
-  const total   = Math.min(settings.qcmWordsPerSession || 10, pool.length);
-  const shuffled = shuffleArray([...pool]).slice(0, total);
+function startFlash() {
+  const pool = buildFlashPool();
+  if (!pool.length) {
+    showToast('Aucun mot disponible');
+    return;
+  }
 
-  qcmSession = {
-    words: shuffled,
-    idx: 0,
-    answers: [],
-    mode: settings.qcmInverseMode ? 'def-mot' : 'mot-def',
+  // Déterminer la direction de chaque carte selon le ratio
+  const ratio   = (settings.flashRatioPct !== undefined ? settings.flashRatioPct : 75) / 100;
+  const inversed = settings.flashInverseMode || false;
+
+  flashSession = {
+    words:    pool,
+    idx:      0,
+    answers:  [],
+    cardModes: pool.map(() => {
+      const base = Math.random() < ratio ? 'mot-def' : 'def-mot';
+      return inversed ? (base === 'mot-def' ? 'def-mot' : 'mot-def') : base;
+    }),
+    hintUsed: new Array(pool.length).fill(false),
     startTime: Date.now(),
-    answered: false,
-    history: [],
-    questionTimes: [],
-    qStart: Date.now(),
-    waitingSwipe: false,
+    revealed:  false,
   };
 
-  navigateTo('qcm');
-  document.getElementById('qcm-results').style.display = 'none';
-  document.getElementById('qcm-question').style.display = '';
-  renderQcmQuestion();
-  initQcmSwipe();
+  navigateTo('flash');
+  document.getElementById('flash-results').style.display = 'none';
+  document.getElementById('flash-question').style.display = '';
+  renderFlashQuestion();
+  initFlashSwipe();
 }
 
-function renderQcmQuestion() {
-  const s   = qcmSession;
+function renderFlashQuestion() {
+  const s   = flashSession;
   const w   = s.words[s.idx];
   const tot = s.words.length;
-  const inversed = s.mode === 'def-mot';
+  const mode = s.cardModes[s.idx]; // 'mot-def' ou 'def-mot'
 
-  document.getElementById('qcm-counter').textContent = `${s.idx+1} / ${tot}`;
-  document.getElementById('qcm-progress').style.width = `${(s.idx/tot)*100}%`;
+  document.getElementById('flash-counter').textContent = `${s.idx+1} / ${tot}`;
+  document.getElementById('flash-progress').style.width = `${(s.idx/tot)*100}%`;
 
-  const modeBtn = document.getElementById('qcm-mode-btn');
-  modeBtn.className = `mode-btn${inversed?' inversed':''}`;
-
-  document.getElementById('qcm-mode-tag').textContent = inversed
-    ? 'Quel mot correspond à cette définition…'
-    : 'Quelle est la définition de…';
-
-  if (inversed) {
-    document.getElementById('qcm-q-label').textContent = 'Définition';
-    document.getElementById('qcm-q-word').style.display = 'none';
-    document.getElementById('qcm-q-badge').style.display = 'none';
-    document.getElementById('qcm-q-def').style.display  = '';
-    document.getElementById('qcm-q-def').innerHTML = `<strong>${w.definition}</strong>`;
+  // Afficher la question
+  if (mode === 'mot-def') {
+    document.getElementById('flash-q-label').textContent  = 'Mot';
+    document.getElementById('flash-q-word').textContent   = w.mot;
+    document.getElementById('flash-q-word').style.display = '';
+    document.getElementById('flash-q-badge').innerHTML    = natureBadgeHtml(w.nature);
+    document.getElementById('flash-q-badge').style.display= '';
+    document.getElementById('flash-q-def').style.display  = 'none';
+    document.getElementById('flash-prompt').textContent   = 'Évoque la définition, puis…';
   } else {
-    document.getElementById('qcm-q-label').textContent = 'Mot';
-    document.getElementById('qcm-q-word').style.display = '';
-    document.getElementById('qcm-q-word').textContent   = w.mot;
-    document.getElementById('qcm-q-badge').style.display= '';
-    document.getElementById('qcm-q-badge').innerHTML    = natureBadgeHtml(w.nature);
-    document.getElementById('qcm-q-def').style.display  = 'none';
+    document.getElementById('flash-q-label').textContent  = 'Définition';
+    document.getElementById('flash-q-word').style.display = 'none';
+    document.getElementById('flash-q-badge').style.display= 'none';
+    document.getElementById('flash-q-def').style.display  = '';
+    document.getElementById('flash-q-def').innerHTML      = `<strong>${w.definition}</strong>`;
+    document.getElementById('flash-prompt').textContent   = 'Évoque le mot, puis…';
   }
 
-  const choices = buildQcmChoices(w, inversed);
-  const container = document.getElementById('qcm-choices');
-  container.innerHTML = choices.map(c => {
-    const text = inversed ? c.mot : `<strong>${c.definition}</strong>`;
-    return `<button class="choice" data-id="${c.id}">${text}</button>`;
-  }).join('');
+  // Réinitialiser l'état
+  s.revealed = false;
+  document.getElementById('flash-answer-card').style.display = 'none';
+  document.getElementById('flash-judge-row').style.display   = 'none';
+  document.getElementById('flash-reveal-btn').style.display  = '';
 
-  container.querySelectorAll('.choice').forEach(btn => {
-    btn.addEventListener('click', () => handleQcmAnswer(btn, w, inversed));
-  });
-
-  s.answered     = false;
-  s.waitingSwipe = false;
-  s.qStart       = Date.now();
-}
-
-function handleQcmAnswer(btn, word, inversed) {
-  if (qcmSession.answered) return;
-  qcmSession.answered = true;
-
-  const elapsed = Math.round((Date.now() - qcmSession.qStart) / 1000);
-  qcmSession.questionTimes.push(elapsed);
-
-  const chosenId = btn.dataset.id;
-  const correct  = chosenId === word.id;
-
-  document.querySelectorAll('#qcm-choices .choice').forEach(b => {
-    b.disabled = true;
-    if (b.dataset.id === word.id) b.classList.add('correct');
-    else if (b === btn && !correct) b.classList.add('wrong');
-  });
-
-  if (correct) {
-    playTone('correct');
+  // Indice syllabe : visible uniquement en mode mot-def (on montre le mot)
+  const hintBtn = document.getElementById('flash-hint-btn');
+  if (mode === 'mot-def') {
+    hintBtn.style.display = '';
+    hintBtn.textContent   = 'indice';
+    hintBtn.className     = 'flash-hint-btn';
+    hintBtn.disabled      = false;
   } else {
-    playTone('wrong');
-  }
-
-  qcmSession.answers.push({ wordId: word.id, correct, elapsed });
-
-  if (correct) {
-    // Bonne réponse : avance automatiquement
-    setTimeout(advanceQcm, 900);
-  } else {
-    // Mauvaise réponse : attendre swipe gauche
-    qcmSession.waitingSwipe = true;
+    // En mode déf→mot, l'indice n'a pas de sens (on voit déjà la définition)
+    hintBtn.style.display = 'none';
   }
 }
 
-function initQcmSwipe() {
-  const screen = document.getElementById('screen-qcm');
+function handleFlashHint() {
+  const s = flashSession;
+  const w = s.words[s.idx];
+  if (s.hintUsed[s.idx] || s.revealed) return;
+
+  s.hintUsed[s.idx] = true;
+  const syl = firstSyllable(w.mot);
+
+  const hintBtn = document.getElementById('flash-hint-btn');
+  hintBtn.textContent = syl + '…';
+  hintBtn.className   = 'flash-hint-btn used';
+  hintBtn.disabled    = true;
+}
+
+function revealFlashAnswer() {
+  const s  = flashSession;
+  const w  = s.words[s.idx];
+  const mode = s.cardModes[s.idx];
+
+  s.revealed = true;
+
+  // Afficher la réponse
+  const answerLabel = document.getElementById('flash-answer-label');
+  const answerText  = document.getElementById('flash-answer-text');
+
+  if (mode === 'mot-def') {
+    answerLabel.textContent = 'Définition';
+    answerText.textContent  = w.definition;
+  } else {
+    answerLabel.textContent = 'Mot';
+    answerText.innerHTML    = `${w.mot} ${natureBadgeHtml(w.nature)}`;
+  }
+
+  document.getElementById('flash-answer-card').style.display = '';
+  document.getElementById('flash-judge-row').style.display   = '';
+  document.getElementById('flash-reveal-btn').style.display  = 'none';
+}
+
+async function judgeFlash(correct) {
+  const s = flashSession;
+  const w = s.words[s.idx];
+
+  if (correct) playTone('correct');
+  else         playTone('wrong');
+
+  s.answers.push({ wordId: w.id, correct });
+
+  // Mettre à jour le mot si maîtrisé et erreur
+  if (!correct && w.status === 'maîtrisé') {
+    w.status = 'à_revoir';
+    w.consecutiveCorrect = 0;
+    w.errorCount = (w.errorCount||0) + 1;
+    await updateWord(w);
+  }
+
+  // Avancer
+  s.idx++;
+  if (s.idx >= s.words.length) {
+    await endFlash();
+  } else {
+    renderFlashQuestion();
+  }
+}
+
+function initFlashSwipe() {
+  const screen = document.getElementById('screen-flash');
   let sx = 0;
 
-  screen.addEventListener('touchstart', e => {
-    sx = e.touches[0].clientX;
-  }, { passive: true });
+  screen._flashTouchStart && screen.removeEventListener('touchstart', screen._flashTouchStart);
+  screen._flashTouchEnd   && screen.removeEventListener('touchend',   screen._flashTouchEnd);
 
-  screen.addEventListener('touchend', e => {
+  screen._flashTouchStart = e => { sx = e.touches[0].clientX; };
+  screen._flashTouchEnd   = e => {
     const dx = e.changedTouches[0].clientX - sx;
-    // Swipe gauche : avancer si erreur en attente
-    if (dx < -60 && qcmSession.waitingSwipe) {
-      qcmSession.waitingSwipe = false;
-      advanceQcm();
-      return;
+    // Swipe droit : question précédente en lecture seule
+    if (dx > 60 && flashSession.idx > 0 && !flashSession.revealed) {
+      showFlashPrevious();
     }
-    // Swipe droit : revenir à la question précédente (lecture seule)
-    if (dx > 60 && qcmSession.idx > 0 && !qcmSession.waitingSwipe && !qcmSession.answered) {
-      showQcmPrevious();
-    }
-  }, { passive: true });
+  };
+
+  screen.addEventListener('touchstart', screen._flashTouchStart, { passive: true });
+  screen.addEventListener('touchend',   screen._flashTouchEnd,   { passive: true });
 }
 
-function showQcmPrevious() {
-  const s = qcmSession;
-  if (s.idx === 0) return;
+function showFlashPrevious() {
+  const s       = flashSession;
   const prevIdx = s.idx - 1;
   const prevWord = s.words[prevIdx];
   const prevAns  = s.answers[prevIdx];
+  const prevMode = s.cardModes[prevIdx];
   if (!prevAns) return;
 
-  const inversed = s.mode === 'def-mot';
+  // Afficher question précédente
+  document.getElementById('flash-counter').textContent = `${prevIdx+1} / ${s.words.length} — déjà répondu`;
 
-  // Afficher la question précédente en lecture seule
-  document.getElementById('qcm-counter').textContent = `${prevIdx+1} / ${s.words.length} — déjà répondu`;
-
-  if (inversed) {
-    document.getElementById('qcm-q-label').textContent = 'Définition';
-    document.getElementById('qcm-q-word').style.display = 'none';
-    document.getElementById('qcm-q-badge').style.display = 'none';
-    document.getElementById('qcm-q-def').style.display  = '';
-    document.getElementById('qcm-q-def').innerHTML = `<strong>${prevWord.definition}</strong>`;
+  if (prevMode === 'mot-def') {
+    document.getElementById('flash-q-label').textContent  = 'Mot';
+    document.getElementById('flash-q-word').textContent   = prevWord.mot;
+    document.getElementById('flash-q-word').style.display = '';
+    document.getElementById('flash-q-badge').innerHTML    = natureBadgeHtml(prevWord.nature);
+    document.getElementById('flash-q-badge').style.display= '';
+    document.getElementById('flash-q-def').style.display  = 'none';
+    document.getElementById('flash-answer-label').textContent = 'Définition';
+    document.getElementById('flash-answer-text').textContent  = prevWord.definition;
   } else {
-    document.getElementById('qcm-q-label').textContent = 'Mot';
-    document.getElementById('qcm-q-word').style.display = '';
-    document.getElementById('qcm-q-word').textContent   = prevWord.mot;
-    document.getElementById('qcm-q-badge').style.display= '';
-    document.getElementById('qcm-q-badge').innerHTML    = natureBadgeHtml(prevWord.nature);
-    document.getElementById('qcm-q-def').style.display  = 'none';
+    document.getElementById('flash-q-label').textContent  = 'Définition';
+    document.getElementById('flash-q-word').style.display = 'none';
+    document.getElementById('flash-q-badge').style.display= 'none';
+    document.getElementById('flash-q-def').style.display  = '';
+    document.getElementById('flash-q-def').innerHTML      = `<strong>${prevWord.definition}</strong>`;
+    document.getElementById('flash-answer-label').textContent = 'Mot';
+    document.getElementById('flash-answer-text').innerHTML    = `${prevWord.mot} ${natureBadgeHtml(prevWord.nature)}`;
   }
 
-  // Reconstruire les choix avec le résultat affiché
-  const choices = buildQcmChoices(prevWord, inversed);
-  const container = document.getElementById('qcm-choices');
-  container.innerHTML = choices.map(c => {
-    const text = inversed ? c.mot : `<strong>${c.definition}</strong>`;
-    const isCorrect = c.id === prevWord.id;
-    const isChosen  = c.id === prevAns.wordId && !prevAns.correct;
-    const cls = isCorrect ? ' correct' : isChosen ? ' wrong' : '';
-    return `<button class="choice${cls}" data-id="${c.id}" disabled>${text}</button>`;
-  }).join('');
+  // Afficher la réponse et le résultat (lecture seule)
+  document.getElementById('flash-answer-card').style.display = '';
+  document.getElementById('flash-reveal-btn').style.display  = 'none';
+  document.getElementById('flash-judge-row').style.display   = 'none';
 
-  // Revenir à la question courante après 2s
+  // Indicateur correct/incorrect
+  document.getElementById('flash-prompt').textContent = prevAns.correct ? '✓ Correct' : '✗ Incorrect';
+
+  // Revenir à la question courante après 2.5s
   setTimeout(() => {
-    if (qcmSession.idx === s.idx) renderQcmQuestion();
+    if (flashSession.idx === s.idx) renderFlashQuestion();
   }, 2500);
 }
 
-async function advanceQcm() {
-  qcmSession.idx++;
-  if (qcmSession.idx >= qcmSession.words.length) {
-    await endQcm();
-  } else {
-    renderQcmQuestion();
-  }
-}
+async function endFlash() {
+  const correctCount = flashSession.answers.filter(a => a.correct).length;
+  const total        = flashSession.words.length;
+  const isPerfect    = correctCount === total && total > 0;
 
-async function endQcm() {
-  for (const ans of qcmSession.answers) {
-    const w = allWords.find(x => x.id === ans.wordId);
-    if (!w) continue;
-    if (!ans.correct) {
-      w.errorCount = (w.errorCount||0) + 1;
-      await updateWord(w);
-    }
+  // Badge Session parfaite Flash
+  if (isPerfect && !(settings.badges||[]).includes('flash_perfect')) {
+    settings.badges = [...(settings.badges||[]), 'flash_perfect'];
+    pendingRewards.push(BADGES_FLASH.find(b => b.id === 'flash_perfect'));
   }
 
-  const correctCount = qcmSession.answers.filter(a => a.correct).length;
-  const totalTime    = qcmSession.questionTimes.reduce((a,b)=>a+b,0);
-  const avgTime      = qcmSession.questionTimes.length ? Math.round(totalTime/qcmSession.questionTimes.length) : 0;
+  // Badge Électrique : 5 sessions Flash dans la même journée
+  const today = todayStr();
+  if (settings.flashSessionsDate !== today) {
+    settings.flashSessionsDate  = today;
+    settings.flashSessionsToday = 0;
+  }
+  settings.flashSessionsToday = (settings.flashSessionsToday || 0) + 1;
+  if (settings.flashSessionsToday >= 5 && !(settings.badges||[]).includes('flash_electrique')) {
+    settings.badges = [...(settings.badges||[]), 'flash_electrique'];
+    pendingRewards.push(BADGES_FLASH.find(b => b.id === 'flash_electrique'));
+  }
 
   const session = {
     id: generateId(),
     date: new Date().toISOString(),
-    mode: 'qcm',
-    totalWords: qcmSession.words.length,
+    mode: 'flash',
+    totalWords: total,
     correctCount,
-    durationSeconds: Math.round((Date.now()-qcmSession.startTime)/1000),
+    durationSeconds: Math.round((Date.now()-flashSession.startTime)/1000),
     isChallengeDay: false,
     streakAtSession: settings.currentStreak,
   };
   await dbPut('sessions', session);
-  await grantQcmJoker();
-  showQcmResults(correctCount, avgTime);
+  await grantFlashJoker();
+
+  // Mettre à jour snapshot maîtrise
+  const snap  = { date: today, count: masteredWords().length };
+  const snaps = settings.masteredSnapshots || [];
+  const todaySnap = snaps.find(s => s.date === today);
+  if (todaySnap) todaySnap.count = snap.count;
+  else snaps.push(snap);
+  settings.masteredSnapshots = snaps;
+
+  await checkMaitriseBadges();
+  await saveSettings();
+
+  showFlashResults(correctCount, total);
 }
 
-function showQcmResults(correct, avgTime) {
-  const total = qcmSession.words.length;
-  const score = total ? Math.round(correct/total*100) : 0;
-  const errors= total - correct;
+function showFlashResults(correct, total) {
+  const score  = total ? Math.round(correct/total*100) : 0;
+  const errors = total - correct;
 
-  document.getElementById('qcm-question').style.display = 'none';
-  document.getElementById('qcm-results').style.display = '';
+  document.getElementById('flash-question').style.display = 'none';
+  document.getElementById('flash-results').style.display  = '';
 
-  document.getElementById('res-score').textContent   = `${score}%`;
-  document.getElementById('res-time').textContent    = avgTime ? `${avgTime}s` : '—';
-  document.getElementById('res-correct').textContent = correct;
-  document.getElementById('res-errors').textContent  = errors;
+  document.getElementById('flash-res-score').textContent   = `${score}%`;
+  document.getElementById('flash-res-correct').textContent = correct;
+  document.getElementById('flash-res-errors').textContent  = errors;
 
-  const missed = qcmSession.answers.filter(a => !a.correct).map(a => allWords.find(w => w.id === a.wordId)).filter(Boolean);
-  const missEl = document.getElementById('qcm-miss-list');
+  const missed = flashSession.answers.filter(a => !a.correct)
+    .map(a => allWords.find(w => w.id === a.wordId)).filter(Boolean);
+  const missEl = document.getElementById('flash-miss-list');
   if (missed.length) {
     missEl.innerHTML = missed.map(w =>
       `<div class="miss-item">
@@ -1380,29 +1373,30 @@ function showQcmResults(correct, avgTime) {
     missEl.innerHTML = `<div style="font-size:13px;color:var(--text-disabled);text-align:center;padding:8px">Aucun mot raté 🎉</div>`;
   }
 
-  setupQcmResultGestures();
-}
+  if (pendingRewards.length) {
+    const r = pendingRewards[pendingRewards.length - 1];
+    if (r && !r.special) {
+      document.getElementById('flash-reward-banner').classList.remove('hidden');
+      document.getElementById('flash-reward-icon').textContent  = r.label ? r.label.split(' ')[0] : '🏅';
+      document.getElementById('flash-reward-title').textContent = `Badge débloqué : ${r.label ? r.label.split(' ').slice(1).join(' ') : ''}`;
+      document.getElementById('flash-reward-sub').textContent   = r.desc || '';
+      playTone('reward');
+      launchConfetti();
+    }
+    pendingRewards = [];
+  } else {
+    document.getElementById('flash-reward-banner').classList.add('hidden');
+  }
 
-function setupQcmResultGestures() {
-  let tapCount = 0, tapTimer = null;
-  const results = document.getElementById('qcm-results');
-
-  const handler = () => {
-    tapCount++;
-    clearTimeout(tapTimer);
-    tapTimer = setTimeout(() => {
-      if (tapCount >= 2) navigateTo('home');
-      tapCount = 0;
-    }, 300);
-  };
-
-  results.addEventListener('click', handler);
-
+  // Gestes de retour
   let sx = 0;
+  const results = document.getElementById('flash-results');
   results.addEventListener('touchstart', e => { sx = e.touches[0].clientX; }, { passive:true });
   results.addEventListener('touchend', e => {
-    const dx = e.changedTouches[0].clientX - sx;
-    if (Math.abs(dx) > 60) navigateTo('home');
+    if (Math.abs(e.changedTouches[0].clientX - sx) > 60) navigateTo('home');
+  });
+  results.addEventListener('click', e => {
+    if (!e.target.closest('button')) navigateTo('home');
   });
 }
 
@@ -1426,33 +1420,40 @@ function buildLearnPool() {
   const actualReview   = Math.min(nReview,   review.length);
   const actualMastered = Math.min(nMastered, mastered.length);
   let   actualFresh    = Math.min(nFresh,    fresh.length);
-  const deficit = total - actualReview - actualMastered - actualFresh;
-  actualFresh   = Math.min(actualFresh + deficit, fresh.length);
+  actualFresh = Math.min(actualFresh + (total - actualReview - actualMastered - actualFresh), fresh.length);
 
   const sortedReview = [...review]
-    .sort((a,b) => (b.errorCount||0) - (a.errorCount||0) ||
-      (a.lastSeenDate||'') < (b.lastSeenDate||'') ? -1 : 1)
+    .sort((a,b) => (b.errorCount||0)-(a.errorCount||0) || (a.lastSeenDate||'')<(b.lastSeenDate||'')?-1:1)
     .slice(0, actualReview);
 
-  const sortedMastered = shuffleArray([...mastered]).slice(0, actualMastered);
-  const sortedFresh    = shuffleArray([...fresh]).slice(0, actualFresh);
-
-  return shuffleArray([...sortedReview, ...sortedMastered, ...sortedFresh]);
+  return shuffleArray([
+    ...sortedReview,
+    ...shuffleArray([...mastered]).slice(0, actualMastered),
+    ...shuffleArray([...fresh]).slice(0, actualFresh),
+  ]);
 }
 
 function startLearn() {
   const pool = buildLearnPool();
-  if (!pool.length) {
-    showToast('Aucun mot disponible');
-    return;
-  }
+  if (!pool.length) { showToast('Aucun mot disponible'); return; }
+
+  // Déterminer le mode de chaque mot : 'write' ou 'evoke'
+  // En mode normal : 75% write, 25% evoke (flash intégré)
+  // En mode inversé : 75% evoke, 25% write
+  const inversed   = settings.learnInverseMode || false;
+  const evokeRatio = inversed ? 0.75 : 0.25;
 
   learnSession = {
-    words: pool, idx: 0, phase: 'memo',
-    results: [], hintUsed: new Array(pool.length).fill(null),
+    words:    pool,
+    idx:      0,
+    phase:    'memo',
+    results:  [],
+    hintUsed: new Array(pool.length).fill(null),
     qcmHintUsed: new Array(pool.length).fill(false),
+    wordMode: pool.map(() => Math.random() < evokeRatio ? 'evoke' : 'write'),
     scrolledAll: false,
-    perfectSoFar: true, usedQcmHint: false,
+    perfectSoFar: true,
+    usedQcmHint:  false,
     startTimes: pool.map(() => 0),
     waitingSwipe: false,
   };
@@ -1463,8 +1464,8 @@ function startLearn() {
 
 /* ── Phase 1 : Mémorisation ── */
 function startMemoPhase() {
-  learnSession.phase = 'memo';
-  learnSession.scrolledAll = false;
+  learnSession.phase        = 'memo';
+  learnSession.scrolledAll  = false;
 
   document.getElementById('memo-phase').style.display = '';
   document.getElementById('restitution-phase').classList.remove('active');
@@ -1481,10 +1482,9 @@ function startMemoPhase() {
     const isAlt      = i % 2 === 1;
     const isReview   = w.status === 'à_revoir';
     const isMastered = w.status === 'maîtrisé';
-    let borderClass = isReview ? ' review' : isMastered ? ' mastered' : '';
-    const themeHtml = (w.themes && w.themes.length)
-      ? w.themes.map(t => `<span class="theme-chip">${t}</span>`).join(' ')
-      : '';
+    const borderClass = isReview ? ' review' : isMastered ? ' mastered' : '';
+    const themeHtml   = (w.themes && w.themes.length)
+      ? w.themes.map(t => `<span class="theme-chip">${t}</span>`).join(' ') : '';
     const natHtml = natureBadgeHtml(w.nature);
     return `<div class="memo-card${isAlt?' alt':' plain'}${borderClass}">
       <div class="memo-word">${w.mot}</div>
@@ -1527,57 +1527,114 @@ function startRestitutionPhase() {
 }
 
 function renderLearnQuestion() {
-  const s = learnSession;
-  const w = s.words[s.idx];
+  const s    = learnSession;
+  const w    = s.words[s.idx];
   const total = s.words.length;
+  const mode  = s.wordMode[s.idx]; // 'write' ou 'evoke'
 
   document.getElementById('learn-counter').textContent = `${s.idx+1} / ${total}`;
   document.getElementById('learn-progress').style.width = `${(s.idx/total)*100}%`;
 
+  s.waitingSwipe = false;
+
+  if (mode === 'evoke') {
+    renderLearnEvoke(w, s);
+  } else {
+    renderLearnWrite(w, s);
+  }
+
+  s.startTimes[s.idx] = Date.now();
+}
+
+function renderLearnWrite(w, s) {
+  // Mode saisie : on montre la définition, l'utilisateur écrit le mot
   const maskedDef = maskWord(w.definition, w.mot);
   document.getElementById('learn-def-text').innerHTML = `<strong>${maskedDef}</strong>`;
 
   const input = document.getElementById('answer-input');
-  input.value = '';
+  input.value     = '';
   input.className = 'answer-input';
   input.disabled  = false;
   input.style.display = '';
 
-  document.getElementById('validate-btn').style.display = '';
-  document.getElementById('validate-btn').disabled = false;
+  document.getElementById('validate-btn').style.display  = '';
+  document.getElementById('validate-btn').disabled       = false;
   document.getElementById('feedback-wrong').classList.remove('show');
 
+  const letterUsed = s.hintUsed[s.idx] !== null;
+  const qcmUsed    = s.qcmHintUsed[s.idx];
+
   const hintLetterBtn = document.getElementById('hint-letter-btn');
-  const hintQcmBtn    = document.getElementById('hint-qcm-btn');
-  const letterUsed    = s.hintUsed[s.idx] !== null;
-  const qcmUsed       = s.qcmHintUsed[s.idx];
+  hintLetterBtn.textContent = letterUsed ? (firstSyllable(w.mot) + '…') : 'indice';
+  hintLetterBtn.className   = `hint-pill hint-pill-primary${letterUsed?' used':''}${qcmUsed?' disabled':''}`;
+  hintLetterBtn.disabled    = qcmUsed || letterUsed;
 
-  // Indice syllabe : afficher "ab…" tant que pas utilisé, syllabe après usage
-  hintLetterBtn.textContent = letterUsed ? (firstSyllable(w.mot) + '…') : 'ab…';
-  hintLetterBtn.className   = `hint-pill${letterUsed?' used':''}${qcmUsed?' disabled':''}`;
-  hintLetterBtn.disabled    = qcmUsed || letterUsed; // usage unique
-
+  const hintQcmBtn = document.getElementById('hint-qcm-btn');
   hintQcmBtn.className = `hint-pill${qcmUsed?' used':''}${letterUsed?' disabled':''}`;
   hintQcmBtn.disabled  = letterUsed && !qcmUsed;
+  hintQcmBtn.style.display = '';
 
-  // QCM inline (hors-ligne)
+  // Masquer la zone évocation
+  document.getElementById('evoke-zone').style.display  = 'none';
+  document.getElementById('learn-def-block').style.display = '';
+
   const inline = document.getElementById('qcm-inline');
   inline.classList.remove('active');
-  inline.style.order = ''; // reset position
+  inline.style.order = '';
 
-  s.waitingSwipe = false;
+  setTimeout(() => { if (!qcmUsed) input.focus(); }, 100);
+}
 
-  if (!qcmUsed) setTimeout(() => input.focus(), 100);
-  s.startTimes[s.idx] = Date.now();
+function renderLearnEvoke(w, s) {
+  // Mode évocation : on montre le mot, l'utilisateur évoque la définition mentalement
+  // Puis révèle et juge
+  document.getElementById('evoke-zone').style.display      = '';
+  document.getElementById('learn-def-block').style.display = 'none';
+  document.getElementById('answer-input').style.display    = 'none';
+  document.getElementById('validate-btn').style.display    = 'none';
+  document.getElementById('feedback-wrong').classList.remove('show');
+  document.getElementById('hint-letter-btn').style.display = 'none';
+  document.getElementById('hint-qcm-btn').style.display    = 'none';
+  document.getElementById('qcm-inline').classList.remove('active');
+
+  document.getElementById('evoke-word').textContent = w.mot;
+  document.getElementById('evoke-badge').innerHTML  = natureBadgeHtml(w.nature);
+  document.getElementById('evoke-prompt').textContent = 'Évoque la définition, puis…';
+
+  document.getElementById('evoke-answer-card').style.display = 'none';
+  document.getElementById('evoke-judge-row').style.display   = 'none';
+  document.getElementById('evoke-reveal-btn').style.display  = '';
+}
+
+function revealLearnEvoke() {
+  const w = learnSession.words[learnSession.idx];
+  document.getElementById('evoke-def-text').textContent = w.definition;
+  document.getElementById('evoke-answer-card').style.display = '';
+  document.getElementById('evoke-judge-row').style.display   = '';
+  document.getElementById('evoke-reveal-btn').style.display  = 'none';
+}
+
+function judgeLearnEvoke(correct) {
+  const s = learnSession;
+  const w = s.words[s.idx];
+  const elapsed = Math.round((Date.now() - s.startTimes[s.idx]) / 1000);
+
+  if (correct) playTone('correct');
+  else {
+    playTone('wrong');
+    s.perfectSoFar = false;
+  }
+
+  s.results.push({ wordId: w.id, correct, elapsed, mode: 'evoke' });
+  advanceLearn();
 }
 
 function handleHintLetter() {
   const s = learnSession;
   const w = s.words[s.idx];
-  if (s.qcmHintUsed[s.idx] || s.hintUsed[s.idx] !== null) return; // usage unique
+  if (s.qcmHintUsed[s.idx] || s.hintUsed[s.idx] !== null) return;
 
   s.hintUsed[s.idx] = true;
-
   const syl = firstSyllable(w.mot);
   const input = document.getElementById('answer-input');
   input.value = syl;
@@ -1585,7 +1642,7 @@ function handleHintLetter() {
 
   const hintLetterBtn = document.getElementById('hint-letter-btn');
   hintLetterBtn.textContent = syl + '…';
-  hintLetterBtn.className = 'hint-pill used';
+  hintLetterBtn.className = 'hint-pill hint-pill-primary used';
   hintLetterBtn.disabled  = true;
 
   document.getElementById('hint-qcm-btn').className = 'hint-pill disabled';
@@ -1598,33 +1655,42 @@ function handleHintQcm() {
   if (s.hintUsed[s.idx] !== null || s.qcmHintUsed[s.idx]) return;
 
   s.qcmHintUsed[s.idx] = true;
-  s.usedQcmHint = true;
-  learnSession.perfectSoFar = false;
+  s.usedQcmHint        = true;
+  s.perfectSoFar       = false;
 
-  document.getElementById('hint-letter-btn').className = 'hint-pill disabled';
+  document.getElementById('hint-letter-btn').className = 'hint-pill hint-pill-primary disabled';
   document.getElementById('hint-letter-btn').disabled  = true;
   document.getElementById('hint-qcm-btn').className    = 'hint-pill used';
 
   document.getElementById('answer-input').style.display = 'none';
   document.getElementById('validate-btn').style.display = 'none';
 
-  // QCM inline en haut de l'écran
-  const pool   = buildQcmChoices(w, false);
-  const inline = document.getElementById('qcm-inline');
-
-  // QCM inline : définition d'abord, puis les propositions
+  // QCM inline en haut avec définition
+  const pool      = buildSimpleChoices(w);
+  const inline    = document.getElementById('qcm-inline');
   const maskedDef = maskWord(w.definition, w.mot);
+
   inline.innerHTML = `<div style="font-size:13px;color:var(--text-secondary);line-height:1.5;margin-bottom:10px;padding-bottom:10px;border-bottom:var(--border-w) solid var(--border-color)"><strong>${maskedDef}</strong></div>`
-    + pool.map(c =>
-      `<button class="qcm-choice" data-id="${c.id}" data-mot="${c.mot}">${c.mot}</button>`
-    ).join('');
+    + pool.map(c => `<button class="qcm-choice" data-id="${c.id}" data-mot="${c.mot}">${c.mot}</button>`).join('');
   inline.classList.add('active');
-  // Positionner en haut
   inline.style.order = '-1';
 
   inline.querySelectorAll('.qcm-choice').forEach(btn => {
     btn.addEventListener('click', () => handleInlineQcmAnswer(btn, w));
   });
+}
+
+function buildSimpleChoices(correct) {
+  // Choisir 3 distracteurs de même nature si possible
+  const pool = activeWords().filter(w => w.id !== correct.id);
+  const n    = 3;
+  const mainNature  = correct.nature && correct.nature[0];
+  const sameNature  = mainNature ? pool.filter(w => w.nature && w.nature.includes(mainNature)) : [];
+  const others      = pool.filter(w => !sameNature.find(s => s.id === w.id));
+  let distractors   = shuffleArray(sameNature).slice(0, n);
+  if (distractors.length < n)
+    distractors = [...distractors, ...shuffleArray(others).slice(0, n - distractors.length)];
+  return shuffleArray([correct, ...distractors]);
 }
 
 function handleInlineQcmAnswer(btn, word) {
@@ -1663,7 +1729,7 @@ function handleAnswerValidate() {
     setTimeout(advanceLearn, 900);
   } else {
     playTone('wrong');
-    learnSession.perfectSoFar = false;
+    s.perfectSoFar = false;
     document.getElementById('feedback-wrong').classList.add('show');
     document.getElementById('fb-wrong-text').textContent   = val;
     document.getElementById('fb-correct-text').textContent = w.mot;
@@ -1671,7 +1737,6 @@ function handleAnswerValidate() {
     document.getElementById('answer-input').disabled  = true;
     document.getElementById('validate-btn').disabled  = true;
     s.results.push({ wordId: w.id, correct: false, elapsed, hint: s.hintUsed[s.idx] !== null ? 'letter' : null });
-    // Attendre swipe gauche
     s.waitingSwipe = true;
   }
 }
@@ -1680,7 +1745,6 @@ function initLearnSwipe() {
   const screen = document.getElementById('screen-learn');
   let sx = 0, sy = 0;
 
-  // Supprimer les anciens listeners pour éviter les doublons
   screen._learnSwipeTouchStart && screen.removeEventListener('touchstart', screen._learnSwipeTouchStart);
   screen._learnSwipeTouchEnd   && screen.removeEventListener('touchend',   screen._learnSwipeTouchEnd);
 
@@ -1692,7 +1756,6 @@ function initLearnSwipe() {
     if (!learnSession.waitingSwipe) return;
     const dx = Math.abs(e.changedTouches[0].clientX - sx);
     const dy = Math.abs(e.changedTouches[0].clientY - sy);
-    // Tap (peu de déplacement) OU swipe gauche : avancer
     const isTap       = dx < 15 && dy < 15;
     const isSwipeLeft = e.changedTouches[0].clientX - sx < -40;
     if (isTap || isSwipeLeft) {
@@ -1712,6 +1775,8 @@ async function advanceLearn() {
   } else {
     document.getElementById('answer-input').style.display = '';
     document.getElementById('validate-btn').style.display = '';
+    document.getElementById('hint-letter-btn').style.display = '';
+    document.getElementById('hint-qcm-btn').style.display    = '';
     renderLearnQuestion();
   }
 }
@@ -1726,16 +1791,16 @@ async function endLearn() {
       w.consecutiveCorrect = (w.consecutiveCorrect||0) + 1;
       if (w.consecutiveCorrect >= 3) w.status = 'maîtrisé';
     } else {
-      w.errorCount = (w.errorCount||0) + 1;
+      w.errorCount         = (w.errorCount||0) + 1;
       w.consecutiveCorrect = 0;
-      if (prev === 'maîtrisé') w.status = 'à_revoir';
-      else if (prev === 'nouveau') w.status = 'à_revoir';
+      if (prev === 'maîtrisé' || prev === 'nouveau') w.status = 'à_revoir';
     }
     w.lastSeenDate = todayStr();
 
+    // Badge Rédemption
     if (res.correct && w.status === 'maîtrisé' && w.errorCount >= 5 && !settings.redemptionDone) {
       settings.redemptionDone = true;
-      pendingRewards.push(BADGES_MOTIV.find(b => b.id === 'redemption'));
+      pendingRewards.push(BADGES_LEARN.find(b => b.id === 'redemption'));
       await saveSetting('redemptionDone', true);
       if (navigator.vibrate) navigator.vibrate([50,30,100,30,200]);
     }
@@ -1745,17 +1810,18 @@ async function endLearn() {
 
   const totalWords   = learnSession.words.length;
   const correctCount = learnSession.results.filter(r => r.correct).length;
-  const isPerfect    = learnSession.perfectSoFar && !learnSession.usedQcmHint && correctCount === totalWords && totalWords >= 10;
+  // Session parfaite : 100% correct, pas d'indice QCM
+  const isPerfect    = learnSession.perfectSoFar && !learnSession.usedQcmHint && correctCount === totalWords;
 
   if (isPerfect) {
     settings.perfectStreak = (settings.perfectStreak||0) + 1;
-    if (!settings.badges.includes('perfect')) {
-      settings.badges.push('perfect');
-      pendingRewards.push(BADGES_MOTIV.find(b => b.id === 'perfect'));
+    if (!(settings.badges||[]).includes('perfect')) {
+      settings.badges = [...(settings.badges||[]), 'perfect'];
+      pendingRewards.push(BADGES_LEARN.find(b => b.id === 'perfect'));
     }
-    if (settings.perfectStreak >= 5 && !settings.badges.includes('infaillible')) {
-      settings.badges.push('infaillible');
-      pendingRewards.push(BADGES_MOTIV.find(b => b.id === 'infaillible'));
+    if (settings.perfectStreak >= 5 && !(settings.badges||[]).includes('infaillible')) {
+      settings.badges = [...(settings.badges||[]), 'infaillible'];
+      pendingRewards.push(BADGES_LEARN.find(b => b.id === 'infaillible'));
     }
   } else {
     settings.perfectStreak = 0;
@@ -1775,17 +1841,11 @@ async function endLearn() {
     ? Math.round(learnSession.results.filter(r=>r.elapsed).reduce((a,r)=>a+(r.elapsed||0),0) / learnSession.results.length)
     : 0;
 
-  const session = {
-    id: generateId(),
-    date: new Date().toISOString(),
-    mode: 'learn',
-    totalWords,
-    correctCount,
-    durationSeconds: 0,
-    isChallengeDay: true,
-    streakAtSession: settings.currentStreak,
-  };
-  await dbPut('sessions', session);
+  await dbPut('sessions', {
+    id: generateId(), date: new Date().toISOString(), mode: 'learn',
+    totalWords, correctCount, durationSeconds: 0,
+    isChallengeDay: true, streakAtSession: settings.currentStreak,
+  });
   await saveSettings();
 
   showLearnResults(correctCount, totalWords, avgTime);
@@ -1853,29 +1913,14 @@ function showLearnResults(correct, total, avgTime) {
     document.getElementById('learn-reward-banner').classList.add('hidden');
   }
 
-  setupLearnResultGestures();
-}
-
-function setupLearnResultGestures() {
-  let tapCount = 0, tapTimer = null;
-  const results = document.getElementById('learn-results');
-
-  const handler = e => {
-    if (e.target.closest('button')) return;
-    tapCount++;
-    clearTimeout(tapTimer);
-    tapTimer = setTimeout(() => {
-      if (tapCount >= 2) navigateTo('home');
-      tapCount = 0;
-    }, 300);
-  };
-  results.addEventListener('click', handler);
-
   let sx = 0;
+  const results = document.getElementById('learn-results');
   results.addEventListener('touchstart', e => { sx = e.touches[0].clientX; }, { passive:true });
   results.addEventListener('touchend', e => {
-    const dx = e.changedTouches[0].clientX - sx;
-    if (Math.abs(dx) > 60) navigateTo('home');
+    if (Math.abs(e.changedTouches[0].clientX - sx) > 60) navigateTo('home');
+  });
+  results.addEventListener('click', e => {
+    if (!e.target.closest('button')) navigateTo('home');
   });
 }
 
@@ -1896,7 +1941,6 @@ async function refreshStats() {
   document.getElementById('seg-r').style.flex = Math.round(rPct * 1000);
   document.getElementById('seg-v').style.flex = Math.max(1, Math.round(vPct * 1000));
 
-  // % à 2 décimales sauf 100%
   const fmt = v => v >= 1 ? '100%' : `${(v*100).toFixed(2)}%`;
   document.getElementById('leg-m').textContent = `Maîtrisés ${fmt(mPct)}`;
   document.getElementById('leg-r').textContent = `À revoir ${fmt(rPct)}`;
@@ -1909,11 +1953,10 @@ async function refreshStats() {
   drawHisto(sessions);
 
   const learnSess = sessions.filter(s => s.mode === 'learn').length;
-  const qcmSess   = sessions.filter(s => s.mode === 'qcm').length;
+  const flashSess = sessions.filter(s => s.mode === 'flash').length;
   document.getElementById('stat-sess-learn').textContent = learnSess;
-  document.getElementById('stat-sess-qcm').textContent   = qcmSess;
+  document.getElementById('stat-sess-flash').textContent = flashSess;
 
-  // Mots les plus ratés — avec séparateur
   const diffList = [...active]
     .filter(w => w.errorCount > 0)
     .sort((a,b) => (b.errorCount||0) - (a.errorCount||0))
@@ -1923,10 +1966,7 @@ async function refreshStats() {
   if (diffList.length) {
     diffEl.innerHTML = diffList.map((w, i) =>
       `<div class="diff-item${i < diffList.length-1 ? ' diff-sep' : ''}">
-        <div class="diff-left">
-          <span class="diff-word">${w.mot}</span>
-          ${natureBadgeHtml(w.nature)}
-        </div>
+        <div class="diff-left"><span class="diff-word">${w.mot}</span>${natureBadgeHtml(w.nature)}</div>
         <span class="diff-errors">✗ ${w.errorCount}×</span>
       </div>`
     ).join('');
@@ -1939,9 +1979,7 @@ function drawCurve() {
   const snaps = settings.masteredSnapshots || [];
   if (!snaps.length) return;
 
-  // Toujours afficher tous les snapshots (période dynamique depuis le début)
   const filtered = [...snaps].sort((a,b) => a.date.localeCompare(b.date));
-
   const total = activeWords().length || 1;
   const W = 300, H = 70, pad = 4;
 
@@ -1968,10 +2006,9 @@ function drawCurve() {
 
   document.getElementById('curve-fill').setAttribute('d', fill);
   document.getElementById('curve-line').setAttribute('d', line);
-  document.getElementById('curve-dot').style.display = 'none';
+  document.getElementById('curve-dot').style.display  = 'none';
   document.getElementById('curve-vline').style.display = 'none';
 
-  // Labels X : début, milieu, fin
   const labels = [
     fmtDate(filtered[0].date),
     fmtDate(filtered[Math.floor(filtered.length/2)].date),
@@ -1979,58 +2016,43 @@ function drawCurve() {
   ];
   document.getElementById('curve-x-labels').innerHTML = labels.map(l=>`<span>${l}</span>`).join('');
 
-  // Touch : afficher date + % au survol
   initCurveTouch(filtered, xs, ys, total, W, H);
 }
 
-function initCurveTouch(snaps, xs, ys, total, W, H) {
-  const svg      = document.getElementById('curve-svg');
-  const label    = document.getElementById('curve-date');
-  const dot      = document.getElementById('curve-dot');
-  const vline    = document.getElementById('curve-vline');
+function initCurveTouch(snaps, xs, ys, total, W) {
+  const svg   = document.getElementById('curve-svg');
+  const label = document.getElementById('curve-date');
+  const dot   = document.getElementById('curve-dot');
+  const vline = document.getElementById('curve-vline');
 
-  svg.addEventListener('touchstart', e => {
-    e.preventDefault();
-    handleCurveTouch(e.touches[0], snaps, xs, ys, total, W, label, dot, vline);
-  }, { passive: false });
+  // Supprimer anciens listeners
+  svg._ctsStart && svg.removeEventListener('touchstart', svg._ctsStart);
+  svg._ctsMove  && svg.removeEventListener('touchmove',  svg._ctsMove);
+  svg._ctsEnd   && svg.removeEventListener('touchend',   svg._ctsEnd);
 
-  svg.addEventListener('touchmove', e => {
-    e.preventDefault();
-    handleCurveTouch(e.touches[0], snaps, xs, ys, total, W, label, dot, vline);
-  }, { passive: false });
+  svg._ctsStart = e => { e.preventDefault(); handleCurveTouch(e.touches[0], snaps, xs, ys, total, W, label, dot, vline); };
+  svg._ctsMove  = e => { e.preventDefault(); handleCurveTouch(e.touches[0], snaps, xs, ys, total, W, label, dot, vline); };
+  svg._ctsEnd   = () => { label.style.display='none'; dot.style.display='none'; vline.style.display='none'; };
 
-  svg.addEventListener('touchend', () => {
-    label.style.display = 'none';
-    dot.style.display   = 'none';
-    vline.style.display = 'none';
-  }, { passive: true });
+  svg.addEventListener('touchstart', svg._ctsStart, { passive: false });
+  svg.addEventListener('touchmove',  svg._ctsMove,  { passive: false });
+  svg.addEventListener('touchend',   svg._ctsEnd,   { passive: true  });
 }
 
 function handleCurveTouch(touch, snaps, xs, ys, total, W, label, dot, vline) {
-  const svgEl  = document.getElementById('curve-svg');
-  const rect   = svgEl.getBoundingClientRect();
-  const xRel   = touch.clientX - rect.left;
-  const xSvg   = (xRel / rect.width) * W;
-
-  // Trouver le snap le plus proche
-  let closest = 0;
-  let minDist = Infinity;
-  xs.forEach((x, i) => {
-    const d = Math.abs(x - xSvg);
-    if (d < minDist) { minDist = d; closest = i; }
-  });
-
-  const snap = snaps[closest];
-  const pct  = total ? snap.count / total : 0;
+  const svgEl = document.getElementById('curve-svg');
+  const rect  = svgEl.getBoundingClientRect();
+  const xSvg  = ((touch.clientX - rect.left) / rect.width) * W;
+  let closest = 0, minDist = Infinity;
+  xs.forEach((x,i) => { const d=Math.abs(x-xSvg); if(d<minDist){minDist=d;closest=i;} });
+  const snap   = snaps[closest];
+  const pct    = total ? snap.count / total : 0;
   const pctStr = pct >= 1 ? '100%' : `${(pct*100).toFixed(2)}%`;
-
-  label.textContent    = `${fmtDate(snap.date)} · ${pctStr}`;
-  label.style.display  = '';
-
+  label.textContent = `${fmtDate(snap.date)} · ${pctStr}`;
+  label.style.display = '';
   dot.setAttribute('cx', xs[closest]);
   dot.setAttribute('cy', ys[closest]);
   dot.style.display = '';
-
   vline.setAttribute('x1', xs[closest]);
   vline.setAttribute('x2', xs[closest]);
   vline.style.display = '';
@@ -2044,18 +2066,15 @@ function fmtDate(str) {
 }
 
 function drawHisto(sessions) {
-  const svg  = document.getElementById('histo-svg');
-  const W = 294, H = 110;
-  const barW = 30, barGap = 12;
-  const barH = 60;
+  const svg = document.getElementById('histo-svg');
+  const W = 294, barW = 30, barGap = 12, barH = 60;
   const statusY = 68, labelY = 84, legendY = 100;
 
-  // 7 derniers jours — commencer par lundi
-  const today = new Date();
-  // Trouver le lundi de la semaine courante
-  const dayOfWeek = today.getDay(); // 0=dim, 1=lun…
-  const diffToMonday = (dayOfWeek + 6) % 7; // jours depuis lundi
-  const monday = new Date(today);
+  const today   = new Date();
+  const dow     = today.getDay();
+  // Lundi de la semaine courante — correction bug dimanche (dow=0)
+  const diffToMonday = (dow === 0) ? 6 : dow - 1;
+  const monday  = new Date(today);
   monday.setDate(today.getDate() - diffToMonday);
 
   const days7 = Array.from({length:7}, (_,i) => {
@@ -2064,50 +2083,46 @@ function drawHisto(sessions) {
     return d.toISOString().slice(0,10);
   });
 
-  const learnByDay = {}, qcmByDay = {};
+  const learnByDay = {}, flashByDay = {};
   sessions.forEach(s => {
     const d = s.date.slice(0,10);
     if (s.mode === 'learn') learnByDay[d] = (learnByDay[d]||0) + (s.totalWords||0);
-    if (s.mode === 'qcm')   qcmByDay[d]  = (qcmByDay[d]||0)  + (s.totalWords||0);
+    if (s.mode === 'flash') flashByDay[d] = (flashByDay[d]||0) + (s.totalWords||0);
   });
 
   const validDays = settings.validDays || [1,2,3,4,5];
-  const maxVal    = Math.max(1, ...days7.map(d => (learnByDay[d]||0) + (qcmByDay[d]||0)));
-
-  const dayLabels = ['L','M','M','J','V','S','D']; // lundi à dimanche
+  const maxVal    = Math.max(1, ...days7.map(d => (learnByDay[d]||0) + (flashByDay[d]||0)));
+  const dayLabels = ['L','M','M','J','V','S','D'];
 
   let svgContent = '';
   days7.forEach((dateStr, i) => {
-    const x = i * (barW + barGap) + 6;
-    const lv = learnByDay[dateStr]||0;
-    const qv = qcmByDay[dateStr]||0;
-    const tot= lv + qv;
-    const date = new Date(dateStr);
-    const dayOfWeek = date.getDay();
-    const isValid   = validDays.includes(dayOfWeek);
-    const hasActivity = tot > 0;
+    const x   = i * (barW + barGap) + 6;
+    const lv  = learnByDay[dateStr]||0;
+    const fv  = flashByDay[dateStr]||0;
+    const tot = lv + fv;
+    // Jour de la semaine pour ce jour précis (0=dim, 1=lun…)
+    const dateDow   = new Date(dateStr).getDay();
+    const isValid   = validDays.includes(dateDow);
+    const hasAct    = tot > 0;
     const isFuture  = dateStr > todayStr();
 
-    let statusColor = '#D8D8D8';
-    if (isFuture) {
-      statusColor = '#ECECEC';
-    } else if (isValid && hasActivity) {
-      statusColor = '#B8DFB4';
-    } else if (isValid && !hasActivity && dateStr < todayStr()) {
-      statusColor = '#E8A0A0';
-    } else if (dateStr === todayStr() && !hasActivity) {
-      statusColor = '#B8DFB4';
+    let statusColor = '#D8D8D8'; // gris par défaut (jours inactifs ou dimanche)
+    if (!isFuture && isValid) {
+      if (hasAct) statusColor = '#B8DFB4';
+      else if (dateStr < todayStr()) statusColor = '#E8A0A0';
+      else statusColor = '#B8DFB4'; // aujourd'hui, jour valide sans activité
     }
+    // Les jours non valides restent toujours gris #D8D8D8
 
     svgContent += `<rect x="${x}" y="${statusY}" width="${barW}" height="4" rx="2" fill="${statusColor}"/>`;
 
-    if (hasActivity) {
-      const qH = Math.round((qv/maxVal) * barH);
+    if (hasAct) {
+      const fH = Math.round((fv/maxVal) * barH);
       const lH = Math.round((lv/maxVal) * barH);
-      const totalH = qH + lH;
+      const totalH = fH + lH;
       const baseY  = statusY - 4 - totalH;
-      if (qH > 0) svgContent += `<rect x="${x}" y="${baseY}" width="${barW}" height="${qH}" rx="3" fill="#B8B0EE"/>`;
-      if (lH > 0) svgContent += `<rect x="${x}" y="${baseY+qH}" width="${barW}" height="${lH}" rx="3" fill="#B8DFB4"/>`;
+      if (fH > 0) svgContent += `<rect x="${x}" y="${baseY}" width="${barW}" height="${fH}" rx="3" fill="#B8B0EE"/>`;
+      if (lH > 0) svgContent += `<rect x="${x}" y="${baseY+fH}" width="${barW}" height="${lH}" rx="3" fill="#B8DFB4"/>`;
     }
 
     const lblColor = isValid ? '#bbb' : '#ccc';
@@ -2118,7 +2133,7 @@ function drawHisto(sessions) {
     <rect x="10"  y="${legendY}" width="10" height="8" rx="2" fill="#B8DFB4"/>
     <text x="24"  y="${legendY+7}" font-size="9" fill="#888" font-family="sans-serif">Apprentissage</text>
     <rect x="115" y="${legendY}" width="10" height="8" rx="2" fill="#B8B0EE"/>
-    <text x="129" y="${legendY+7}" font-size="9" fill="#888" font-family="sans-serif">QCM</text>
+    <text x="129" y="${legendY+7}" font-size="9" fill="#888" font-family="sans-serif">Flash</text>
   `;
 
   svg.innerHTML = svgContent;
@@ -2137,26 +2152,46 @@ function refreshSettings() {
   document.getElementById('learn-words-val').textContent    = settings.wordsPerSession || 12;
   document.getElementById('review-ratio-val').textContent   = `${settings.reviewRatioPct || 20}%`;
   document.getElementById('mastered-ratio-val').textContent = `${settings.masteredRatioPct || 10}%`;
-  document.getElementById('qcm-words-val').textContent      = settings.qcmWordsPerSession || 10;
-  document.getElementById('qcm-choices-val').textContent    = settings.qcmChoicesCount || 4;
 
-  const inv = settings.qcmInverseMode || false;
-  document.getElementById('qcm-mode-toggle').className = `toggle ${inv ? 'on' : 'off'}`;
-  document.getElementById('qcm-mode-sub').textContent  = inv ? 'Définition vers mot' : 'Mot vers définition';
+  const learnInv = settings.learnInverseMode || false;
+  document.getElementById('learn-inverse-toggle').className = `toggle ${learnInv ? 'on' : 'off'}`;
+  document.getElementById('learn-inverse-sub').textContent  = learnInv ? '75% évocation · 25% saisie' : '75% saisie · 25% évocation';
 
-  // Volume
+  document.getElementById('flash-words-val').textContent = settings.flashWordsPerSession || 10;
+
+  const ratio = settings.flashRatioPct !== undefined ? settings.flashRatioPct : 75;
+  refreshFlashRatioSlider(ratio);
+
+  const flashInv = settings.flashInverseMode || false;
+  document.getElementById('flash-inverse-toggle').className = `toggle ${flashInv ? 'on' : 'off'}`;
+
   const vol = settings.soundVolume !== undefined ? settings.soundVolume : 0.5;
-  document.getElementById('volume-slider').value = Math.round(vol * 100);
+  document.getElementById('volume-slider').value    = Math.round(vol * 100);
   document.getElementById('volume-val').textContent = `${Math.round(vol * 100)}%`;
 
   refreshSoundBtns();
   refreshWordsModifiedMsg();
 
-  // Version
   const baseVer = settings.wordsBaseVersion || '—';
   const expVer  = settings.lastWordsExportVersion || null;
   document.getElementById('version-line').textContent =
-    `Lexis v1.0 — ${baseVer}${expVer ? ' · export ' + expVer : ''}`;
+    `Lexis v1.2 — ${baseVer}${expVer ? ' · export ' + expVer : ''}`;
+}
+
+function refreshFlashRatioSlider(ratio) {
+  const slider = document.getElementById('flash-ratio-slider');
+  if (slider) slider.value = ratio;
+  updateFlashRatioLabel(ratio);
+}
+
+function updateFlashRatioLabel(ratio) {
+  const lbl = document.getElementById('flash-ratio-label');
+  if (!lbl) return;
+  const motPct = ratio;
+  const defPct = 100 - ratio;
+  if (motPct === 0)   lbl.textContent = '100% Déf. → Mot';
+  else if (motPct === 100) lbl.textContent = '100% Mot → Déf.';
+  else lbl.textContent = `${motPct}% Mot → Déf. · ${defPct}% Déf. → Mot`;
 }
 
 function refreshSoundBtns() {
@@ -2175,20 +2210,17 @@ function setSound(id, on) {
 }
 
 /* ─────────────────────────────────────────────────────────────
-   VERSIONNAGE EXPORT WORDS.JSON
+   VERSIONNAGE EXPORT
 ───────────────────────────────────────────────────────────── */
 function computeNextWordsVersion() {
-  const now   = new Date();
-  const yy    = String(now.getFullYear()).slice(2);
-  const mm    = String(now.getMonth()+1).padStart(2,'0');
+  const now    = new Date();
+  const yy     = String(now.getFullYear()).slice(2);
+  const mm     = String(now.getMonth()+1).padStart(2,'0');
   const prefix = `lexis_v${yy}${mm}-`;
-
   const current = settings.lastWordsExportVersion || '';
   if (current.startsWith(prefix)) {
-    // Incrémenter la lettre
     const letter = current.slice(prefix.length);
-    const nextLetter = String.fromCharCode(letter.charCodeAt(0) + 1);
-    return prefix + nextLetter;
+    return prefix + String.fromCharCode(letter.charCodeAt(0) + 1);
   }
   return prefix + 'a';
 }
@@ -2197,40 +2229,28 @@ function computeNextWordsVersion() {
    EXPORT / IMPORT
 ───────────────────────────────────────────────────────────── */
 function exportProgress() {
-  const data = {
-    version: '1.0',
-    exportDate: new Date().toISOString(),
-    settings,
-  };
-  downloadJson(data, `lexis-progression-${todayStr()}.json`);
+  downloadJson({ version:'1.2', exportDate: new Date().toISOString(), settings },
+    `lexis-progression-${todayStr()}.json`);
   saveSetting('lastExportDate', todayStr());
   showToast('Progression exportée');
 }
 
 async function importProgress(file) {
   try {
-    const text = await file.text();
-    const data = JSON.parse(text);
+    const data = JSON.parse(await file.text());
     if (!data.settings) throw new Error('Format invalide');
     Object.assign(settings, data.settings);
     await saveSettings();
     refreshHome();
     refreshSettings();
     showToast('Progression importée');
-  } catch(e) {
-    showToast('Erreur : fichier invalide');
-  }
+  } catch(e) { showToast('Erreur : fichier invalide'); }
 }
 
 function exportWords() {
-  const version = computeNextWordsVersion();
+  const version  = computeNextWordsVersion();
   const wordData = allWords.filter(w => !w.isArchived || w.isUserCreated);
-  // Insérer le sentinel de version en première position
-  const sentinel = { __lexis_version__: version };
-  const output   = [sentinel, ...wordData];
-
-  downloadJson(output, 'words.json');
-
+  downloadJson([{ __lexis_version__: version }, ...wordData], 'words.json');
   settings.lastWordsExportVersion = version;
   saveSetting('lastWordsExportVersion', version);
   saveSetting('lastWordExportDate', todayStr());
@@ -2243,27 +2263,21 @@ function exportWords() {
 
 async function importWords(file) {
   try {
-    const text = await file.text();
-    const raw  = JSON.parse(text);
+    const raw = JSON.parse(await file.text());
     if (!Array.isArray(raw)) throw new Error('Format invalide');
 
-    // Extraire version
     const sentinel = raw.find(item => item.__lexis_version__);
     if (sentinel) {
-      const ver = sentinel.__lexis_version__;
-      settings.wordsBaseVersion = ver;
-      await saveSetting('wordsBaseVersion', ver);
+      settings.wordsBaseVersion = sentinel.__lexis_version__;
+      await saveSetting('wordsBaseVersion', sentinel.__lexis_version__);
     }
     const data = raw.filter(item => !item.__lexis_version__);
 
-    // Conserver la progression
     const progMap = {};
     allWords.forEach(w => {
-      progMap[w.id] = { status: w.status, consecutiveCorrect: w.consecutiveCorrect, errorCount: w.errorCount, lastSeenDate: w.lastSeenDate };
+      progMap[w.id] = { status:w.status, consecutiveCorrect:w.consecutiveCorrect, errorCount:w.errorCount, lastSeenDate:w.lastSeenDate };
     });
-    data.forEach(w => {
-      if (progMap[w.id]) Object.assign(w, progMap[w.id]);
-    });
+    data.forEach(w => { if (progMap[w.id]) Object.assign(w, progMap[w.id]); });
 
     const tx = db.transaction('words', 'readwrite');
     tx.objectStore('words').clear();
@@ -2275,70 +2289,47 @@ async function importWords(file) {
     refreshHome();
     refreshSettings();
     showToast('Liste importée');
-  } catch(e) {
-    showToast('Erreur : fichier invalide');
-  }
+  } catch(e) { showToast('Erreur : fichier invalide'); }
 }
 
 function downloadJson(data, filename) {
   const blob = new Blob([JSON.stringify(data, null, 2)], { type:'application/json' });
   const url  = URL.createObjectURL(blob);
   const a    = document.createElement('a');
-  a.href     = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
 }
 
 async function resetProgress() {
-  allWords.forEach(w => {
-    w.status = 'nouveau';
-    w.consecutiveCorrect = 0;
-    w.errorCount = 0;
-    w.lastSeenDate = null;
-  });
+  allWords.forEach(w => { w.status='nouveau'; w.consecutiveCorrect=0; w.errorCount=0; w.lastSeenDate=null; });
   await dbPutAll('words', allWords);
 
   const tx = db.transaction('sessions', 'readwrite');
   tx.objectStore('sessions').clear();
   await new Promise((res,rej)=>{ tx.oncomplete=res; tx.onerror=rej; });
 
-  const keysToReset = ['currentStreak','longestStreak','jokers','badges',
-    'lastLearningDate','perfectStreak','redemptionDone','qcmSessionCount','masteredSnapshots'];
-  keysToReset.forEach(k => { settings[k] = DEFAULT_SETTINGS[k]; });
+  ['currentStreak','longestStreak','jokers','badges','lastLearningDate',
+   'perfectStreak','redemptionDone','flashSessionCount','masteredSnapshots',
+   'flashSessionsToday','flashSessionsDate'].forEach(k => { settings[k] = DEFAULT_SETTINGS[k]; });
   await saveSettings();
-
   refreshHome();
   refreshSettings();
   showToast('Entraînement réinitialisé');
 }
 
-/* ── Supprimer l'application ── */
 async function deleteApp() {
   try {
-    // 1. Vider IndexedDB
-    const stores = ['words','sessions','settings'];
-    for (const store of stores) {
+    for (const store of ['words','sessions','settings']) {
       const tx = db.transaction(store, 'readwrite');
       tx.objectStore(store).clear();
       await new Promise((res,rej)=>{ tx.oncomplete=res; tx.onerror=rej; });
     }
+    if ('caches' in window) await Promise.all((await caches.keys()).map(k => caches.delete(k)));
+    if ('serviceWorker' in navigator)
+      await Promise.all((await navigator.serviceWorker.getRegistrations()).map(r => r.unregister()));
 
-    // 2. Vider les caches Service Worker
-    if ('caches' in window) {
-      const keys = await caches.keys();
-      await Promise.all(keys.map(k => caches.delete(k)));
-    }
-
-    // 3. Désenregistrer le Service Worker
-    if ('serviceWorker' in navigator) {
-      const regs = await navigator.serviceWorker.getRegistrations();
-      await Promise.all(regs.map(r => r.unregister()));
-    }
-
-    // 4. Message final
     document.body.innerHTML = `
       <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100vh;font-family:sans-serif;padding:24px;text-align:center;gap:16px">
         <div style="font-size:32px">✓</div>
@@ -2350,10 +2341,7 @@ async function deleteApp() {
           sur l'icône Lexis sur votre écran d'accueil.
         </div>
       </div>`;
-  } catch(e) {
-    showToast('Erreur lors de la suppression');
-    console.error(e);
-  }
+  } catch(e) { showToast('Erreur lors de la suppression'); console.error(e); }
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -2373,22 +2361,19 @@ function shuffleArray(arr) {
 ───────────────────────────────────────────────────────────── */
 function bindEvents() {
 
-  /* ── Nav ── */
   document.querySelectorAll('.nav-item').forEach(ni => {
     ni.addEventListener('click', () => navigateTo(ni.dataset.screen));
   });
 
   /* ── Accueil ── */
   document.getElementById('streak-pill-btn').addEventListener('click', openFlamePopup);
-  document.getElementById('btn-go-qcm').addEventListener('click', startQcm);
+  document.getElementById('btn-go-flash').addEventListener('click', startFlash);
   document.getElementById('btn-go-learn').addEventListener('click', startLearn);
 
-  // Case "à revoir" → Mots avec filtre review
   document.getElementById('home-review-card').addEventListener('click', () => {
     wordsFromReview = true;
-    activeFilters = new Set(['review']);
+    activeFilters   = new Set(['review']);
     navigateTo('words');
-    // Màj visuels des pills après navigation
     requestAnimationFrame(() => {
       document.querySelectorAll('.filter-pill').forEach(p => {
         p.classList.toggle('active', p.dataset.filter === 'review');
@@ -2396,28 +2381,16 @@ function bindEvents() {
     });
   });
 
-  document.getElementById('flame-popup').addEventListener('click', e => {
-    if (e.target === document.getElementById('flame-popup')) closeModal('flame-popup');
-  });
   document.getElementById('joker-banner-close').addEventListener('click', () => {
     document.getElementById('joker-banner').classList.remove('show');
   });
 
-  /* ── QCM : bouton accueil (remplace flèche) ── */
-  document.getElementById('qcm-back-btn').addEventListener('click', () => navigateTo('home'));
-
-  /* ── QCM : changement de mode ── */
-  document.getElementById('qcm-mode-btn').addEventListener('click', () => {
-    // Changer le mode sans avancer — re-render la question courante
-    qcmSession.mode = qcmSession.mode === 'mot-def' ? 'def-mot' : 'mot-def';
-    const inversed  = qcmSession.mode === 'def-mot';
-    document.getElementById('qcm-mode-btn').className = `mode-btn${inversed?' inversed':''}`;
-    // Re-rendre la même question dans le nouveau mode (réponse remise à zéro)
-    qcmSession.answered     = false;
-    qcmSession.waitingSwipe = false;
-    qcmSession.qStart       = Date.now();
-    renderQcmQuestion();
-  });
+  /* ── Flash ── */
+  document.getElementById('flash-back-btn').addEventListener('click', () => navigateTo('home'));
+  document.getElementById('flash-hint-btn').addEventListener('click', handleFlashHint);
+  document.getElementById('flash-reveal-btn').addEventListener('click', revealFlashAnswer);
+  document.getElementById('flash-judge-wrong').addEventListener('click', () => judgeFlash(false));
+  document.getElementById('flash-judge-ok').addEventListener('click',    () => judgeFlash(true));
 
   /* ── Apprentissage ── */
   document.getElementById('learn-back-btn').addEventListener('click', () => navigateTo('home'));
@@ -2430,7 +2403,10 @@ function bindEvents() {
     if (e.key === 'Enter') handleAnswerValidate();
   });
   document.getElementById('hint-letter-btn').addEventListener('click', handleHintLetter);
-  document.getElementById('hint-qcm-btn').addEventListener('click', handleHintQcm);
+  document.getElementById('hint-qcm-btn').addEventListener('click',    handleHintQcm);
+  document.getElementById('evoke-reveal-btn').addEventListener('click', revealLearnEvoke);
+  document.getElementById('evoke-judge-wrong').addEventListener('click', () => judgeLearnEvoke(false));
+  document.getElementById('evoke-judge-ok').addEventListener('click',    () => judgeLearnEvoke(true));
 
   /* ── Liste de mots ── */
   document.getElementById('btn-add-word').addEventListener('click', () => openWordForm(null));
@@ -2442,7 +2418,6 @@ function bindEvents() {
     updateFormSaveBtn();
   });
   document.getElementById('form-def').addEventListener('input', updateFormSaveBtn);
-
   document.querySelectorAll('.nat-btn').forEach(btn => {
     btn.addEventListener('click', () => {
       const nat = btn.dataset.nat;
@@ -2451,21 +2426,17 @@ function bindEvents() {
       btn.classList.toggle('sel', selectedNatures.has(nat));
     });
   });
-
   document.getElementById('search-input').addEventListener('input', e => {
     searchQuery = e.target.value;
     refreshWordList();
   });
-
   document.getElementById('cycle-btn').addEventListener('click', () => {
-    const modes = ['mot','definition','theme'];
-    const idx   = modes.indexOf(searchMode);
-    searchMode  = modes[(idx+1) % modes.length];
-    const labels= { mot:'Rechercher un mot…', definition:'Rechercher dans les définitions…', theme:'Rechercher par thème…' };
+    const modes  = ['mot','definition','theme'];
+    const labels = { mot:'Rechercher un mot…', definition:'Rechercher dans les définitions…', theme:'Rechercher par thème…' };
+    searchMode   = modes[(modes.indexOf(searchMode)+1) % modes.length];
     document.getElementById('search-input').placeholder = labels[searchMode];
     refreshWordList();
   });
-
   document.getElementById('filters-wrap').addEventListener('click', e => {
     const pill = e.target.closest('.filter-pill');
     if (!pill) return;
@@ -2500,13 +2471,33 @@ function bindEvents() {
   makeStepper('learn-words',    'wordsPerSession',   5, 35, 1);
   makeStepper('review-ratio',   'reviewRatioPct',    0, 35, 5, '%');
   makeStepper('mastered-ratio', 'masteredRatioPct',  0, 35, 5, '%');
-  makeStepper('qcm-words',      'qcmWordsPerSession',5, 25, 1);
-  makeStepper('qcm-choices',    'qcmChoicesCount',   2,  6, 2);
+  makeStepper('flash-words',    'flashWordsPerSession', 5, 25, 1);
 
-  document.getElementById('qcm-mode-toggle').addEventListener('click', () => {
-    settings.qcmInverseMode = !settings.qcmInverseMode;
-    saveSetting('qcmInverseMode', settings.qcmInverseMode);
-    refreshSettings();
+  // Toggle inversé Apprentissage
+  document.getElementById('learn-inverse-toggle').addEventListener('click', () => {
+    settings.learnInverseMode = !settings.learnInverseMode;
+    saveSetting('learnInverseMode', settings.learnInverseMode);
+    document.getElementById('learn-inverse-toggle').className = `toggle ${settings.learnInverseMode ? 'on' : 'off'}`;
+    document.getElementById('learn-inverse-sub').textContent  =
+      settings.learnInverseMode ? '75% évocation · 25% saisie' : '75% saisie · 25% évocation';
+  });
+
+  // Slider ratio Flash
+  document.getElementById('flash-ratio-slider').addEventListener('input', e => {
+    // Snap aux valeurs 0, 25, 50, 75, 100
+    const raw    = parseInt(e.target.value);
+    const snapped = Math.round(raw / 25) * 25;
+    e.target.value = snapped;
+    settings.flashRatioPct = snapped;
+    saveSetting('flashRatioPct', snapped);
+    updateFlashRatioLabel(snapped);
+  });
+
+  // Toggle inversé Flash
+  document.getElementById('flash-inverse-toggle').addEventListener('click', () => {
+    settings.flashInverseMode = !settings.flashInverseMode;
+    saveSetting('flashInverseMode', settings.flashInverseMode);
+    document.getElementById('flash-inverse-toggle').className = `toggle ${settings.flashInverseMode ? 'on' : 'off'}`;
   });
 
   // Volume
@@ -2521,12 +2512,10 @@ function bindEvents() {
   // Sons
   ['correct','wrong','reward'].forEach(type => {
     const key = type === 'correct' ? 'soundCorrect' : type === 'wrong' ? 'soundWrong' : 'soundRewards';
-    const id  = `snd-${type}-btn`;
-    document.getElementById(id).addEventListener('click', () => {
+    document.getElementById(`snd-${type}-btn`).addEventListener('click', () => {
       settings[key] = !settings[key];
       saveSetting(key, settings[key]);
       refreshSoundBtns();
-      // Déclencher un son de test si on active
       if (settings[key]) playTone(type);
     });
   });
@@ -2544,7 +2533,6 @@ function bindEvents() {
   document.getElementById('import-progress-input').addEventListener('change', e => {
     if (e.target.files[0]) { importProgress(e.target.files[0]); closeModal('import-progress-modal'); }
   });
-
   document.getElementById('import-words-cancel').addEventListener('click', () => closeModal('import-words-modal'));
   document.getElementById('import-words-choose').addEventListener('click', () => {
     document.getElementById('import-words-input').click();
@@ -2553,20 +2541,16 @@ function bindEvents() {
     if (e.target.files[0]) { importWords(e.target.files[0]); closeModal('import-words-modal'); }
   });
 
-  // Reset
-  document.getElementById('btn-reset').addEventListener('click', () => openModal('reset-modal'));
+  document.getElementById('btn-reset').addEventListener('click',  () => openModal('reset-modal'));
   document.getElementById('reset-cancel').addEventListener('click',  () => closeModal('reset-modal'));
   document.getElementById('reset-confirm').addEventListener('click', async () => {
-    closeModal('reset-modal');
-    await resetProgress();
+    closeModal('reset-modal'); await resetProgress();
   });
 
-  // Supprimer l'application
   document.getElementById('btn-delete-app').addEventListener('click', () => openModal('delete-app-modal'));
   document.getElementById('delete-app-cancel').addEventListener('click',  () => closeModal('delete-app-modal'));
   document.getElementById('delete-app-confirm').addEventListener('click', async () => {
-    closeModal('delete-app-modal');
-    await deleteApp();
+    closeModal('delete-app-modal'); await deleteApp();
   });
 
   /* ── Theme picker ── */
@@ -2588,7 +2572,6 @@ function bindEvents() {
     });
   });
 
-  /* ── Swipe bas global → accueil ── */
   initGlobalSwipeDown();
 }
 
@@ -2597,7 +2580,6 @@ function makeStepper(prefix, key, min, max, step, suffix='') {
   const btnMin = document.getElementById(`${prefix}-minus`);
   const btnPls = document.getElementById(`${prefix}-plus`);
   if (!valEl || !btnMin || !btnPls) return;
-
   btnMin.addEventListener('click', () => {
     const v = Math.max(min, (settings[key]||min) - step);
     saveSetting(key, v);
@@ -2623,8 +2605,7 @@ async function init() {
       document.getElementById('splash').classList.add('hidden');
     }, 1600);
 
-    // Afficher la version dans le splash
-    const baseVer = settings.wordsBaseVersion || 'lexis_v2604-a';
+    const baseVer   = settings.wordsBaseVersion || 'lexis_v2604-a';
     const splashSub = document.getElementById('splash-sub');
     if (splashSub) splashSub.textContent = `${baseVer} · ${allWords.length.toLocaleString('fr')} mots`;
 
@@ -2636,7 +2617,6 @@ async function init() {
       navigator.serviceWorker.register('service-worker.js')
         .catch(err => console.warn('SW:', err));
     }
-
   } catch(e) {
     console.error('Init failed:', e);
     document.getElementById('splash').innerHTML =

@@ -1,10 +1,10 @@
 /* ═══════════════════════════════════════════════════════════════
-   LEXIS — service-worker.js
+   LEXIS — service-worker.js  v1.2
    Cache complet hors-ligne (Cache First pour assets, Network First
    pour words.json au 1er lancement uniquement)
 ═══════════════════════════════════════════════════════════════ */
 
-const CACHE_NAME    = 'lexis-v1.0';
+const CACHE_NAME    = 'lexis-v1.2';
 const WORDS_CACHE   = 'lexis-words-v1';
 
 /* Assets à précacher immédiatement à l'installation */
