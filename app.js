@@ -1199,7 +1199,7 @@ function revealFlashAnswer() {
 
   if (mode === 'mot-def') {
     answerLabel.textContent = 'Définition';
-    answerText.textContent  = w.definition;
+    answerText.innerHTML    = `<strong>${maskWord(w.definition, w.mot)}</strong>`;
   } else {
     answerLabel.textContent = 'Mot';
     answerText.innerHTML    = `${w.mot} ${natureBadgeHtml(w.nature)}`;
@@ -1358,6 +1358,9 @@ function showFlashResults(correct, total) {
 
   document.getElementById('flash-question').style.display = 'none';
   document.getElementById('flash-results').style.display  = '';
+
+  // Sur l'écran résultats : bouton = icône maison → accueil
+  document.getElementById('flash-back-btn').innerHTML = `<svg viewBox="0 0 24 24" stroke="var(--text-secondary)" fill="none" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`;
 
   document.getElementById('flash-res-score').textContent   = `${score}%`;
   document.getElementById('flash-res-correct').textContent = correct;
@@ -1590,7 +1593,6 @@ function renderLearnEvoke(w, s) {
   document.getElementById('evoke-word').textContent = w.mot;
   document.getElementById('evoke-badge').innerHTML  = natureBadgeHtml(w.nature);
   document.getElementById('evoke-prompt').textContent = 'Évoque la définition, puis…';
-
   document.getElementById('evoke-answer-card').style.display = 'none';
   document.getElementById('evoke-judge-row').style.display   = 'none';
   document.getElementById('evoke-reveal-btn').style.display  = '';
@@ -1598,7 +1600,7 @@ function renderLearnEvoke(w, s) {
 
 function revealLearnEvoke() {
   const w = learnSession.words[learnSession.idx];
-  document.getElementById('evoke-def-text').textContent = w.definition;
+  document.getElementById('evoke-def-text').innerHTML = `<strong>${maskWord(w.definition, w.mot)}</strong>`;
   document.getElementById('evoke-answer-card').style.display = '';
   document.getElementById('evoke-judge-row').style.display   = '';
   document.getElementById('evoke-reveal-btn').style.display  = 'none';
@@ -1983,15 +1985,22 @@ function drawHisto(sessions) {
 
   const today   = new Date();
   const dow     = today.getDay();
-  // Lundi de la semaine courante — correction bug dimanche (dow=0)
   const diffToMonday = (dow === 0) ? 6 : dow - 1;
   const monday  = new Date(today);
   monday.setDate(today.getDate() - diffToMonday);
 
+  // Utiliser la date locale (pas ISO UTC qui peut décaler d'un jour)
+  function localDateStr(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth()+1).padStart(2,'0');
+    const day = String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  }
+
   const days7 = Array.from({length:7}, (_,i) => {
     const d = new Date(monday);
     d.setDate(monday.getDate() + i);
-    return d.toISOString().slice(0,10);
+    return localDateStr(d);
   });
 
   const learnByDay = {}, flashByDay = {};
@@ -2308,6 +2317,13 @@ function bindEvents() {
 
   /* ── Flash ── */
   document.getElementById('flash-back-btn').addEventListener('click', () => {
+    // Si l'écran résultats est visible → toujours accueil
+    if (document.getElementById('flash-results').style.display !== 'none' &&
+        document.getElementById('flash-results').style.display !== '') {
+      navigateTo('home');
+      return;
+    }
+    // Pendant les questions : maison si Q1, précédent sinon
     if (flashSession.idx === 0) {
       navigateTo('home');
     } else {
