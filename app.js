@@ -564,21 +564,30 @@ async function checkAndUpdateStreak(sessionDate) {
     streak = 1;
   } else {
     const diff = daysDiff(last, sessionDate);
-    if (diff === 0) return;
-    if (diff === 1) {
+    if (diff === 0) return; // même jour, rien à faire
+
+    // Compter les jours VALIDES manqués entre last et sessionDate (exclus)
+    const validDays    = settings.validDays || [1,2,3,4,5];
+    const missedValid  = countMissedValidDays(last, sessionDate, validDays);
+
+    if (missedValid === 0) {
+      // Aucun jour valide manqué (ex: vendredi→lundi) → continuité normale
       streak++;
     } else {
+      // Consommer 1 joker par jour valide manqué
       const jokers = settings.jokers || 0;
-      if (jokers >= 2) {
-        settings.jokers = jokers - 2;
+      const s = missedValid === 1 ? '' : 's';
+      if (jokers >= missedValid) {
+        settings.jokers = jokers - missedValid;
         streak++;
-        showJokerBanner('2 jokers ont été utilisés pour préserver votre série.');
-      } else if (jokers === 1) {
+        showJokerBanner(`${missedValid} joker${s} utilisé${s} pour préserver votre série.`);
+      } else {
+        // Pas assez de jokers
         settings.jokers = 0;
         streak = 1;
-        showJokerBanner('Vous n\'avez pas suffisamment de jokers pour préserver votre série.');
-      } else {
-        streak = 1;
+        if (jokers > 0) {
+          showJokerBanner(`Pas assez de jokers pour préserver votre série (${missedValid} jour${s} manqué${s}).`);
+        }
       }
     }
   }
@@ -588,13 +597,27 @@ async function checkAndUpdateStreak(sessionDate) {
   settings.longestStreak    = longest;
   settings.lastLearningDate = sessionDate;
 
-  const prevStreak = (last ? (settings.currentStreak - 1) : 0);
+  const prevStreak = (last ? (streak - 1) : 0);
   const newJoker   = Math.floor(streak/15) - Math.floor(prevStreak/15);
   if (newJoker > 0) settings.jokers = Math.min(5, (settings.jokers||0) + newJoker);
 
   await checkSerieBadges(streak);
   await saveSettings();
   refreshHome();
+}
+
+/* Compte les jours valides entre d1Str (exclu) et d2Str (exclu) */
+function countMissedValidDays(d1Str, d2Str, validDays) {
+  const d1 = new Date(d1Str);
+  const d2 = new Date(d2Str);
+  let count = 0;
+  const cur = new Date(d1);
+  cur.setDate(cur.getDate() + 1);
+  while (cur < d2) {
+    if (validDays.includes(cur.getDay())) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
 }
 
 function showJokerBanner(msg) {
