@@ -549,7 +549,11 @@ async function refreshSuccessRate() {
 }
 
 function todayStr() {
-  return new Date().toISOString().slice(0,10);
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth()+1).padStart(2,'0');
+  const day = String(d.getDate()).padStart(2,'0');
+  return `${y}-${m}-${day}`;
 }
 
 /* ─────────────────────────────────────────────────────────────
@@ -564,21 +568,30 @@ async function checkAndUpdateStreak(sessionDate) {
     streak = 1;
   } else {
     const diff = daysDiff(last, sessionDate);
-    if (diff === 0) return;
-    if (diff === 1) {
+    if (diff === 0) return; // même jour, rien à faire
+
+    // Compter uniquement les jours VALIDES manqués (exclut les weekends et jours inactifs)
+    const validDays   = settings.validDays || [1,2,3,4,5];
+    const missedValid = countMissedValidDays(last, sessionDate, validDays);
+
+    if (missedValid === 0) {
+      // Pas de jour valide manqué (ex: vendredi→lundi) → continuité normale
       streak++;
     } else {
       const jokers = settings.jokers || 0;
-      if (jokers >= 2) {
-        settings.jokers = jokers - 2;
+      const s = missedValid === 1 ? '' : 's';
+      if (jokers >= missedValid) {
+        // Assez de jokers : 1 joker par jour valide manqué
+        settings.jokers = jokers - missedValid;
         streak++;
-        showJokerBanner('2 jokers ont été utilisés pour préserver votre série.');
-      } else if (jokers === 1) {
+        showJokerBanner(`${missedValid} joker${s} utilisé${s} pour préserver votre série.`);
+      } else {
+        // Pas assez de jokers → série interrompue
         settings.jokers = 0;
         streak = 1;
-        showJokerBanner('Vous n\'avez pas suffisamment de jokers pour préserver votre série.');
-      } else {
-        streak = 1;
+        if (jokers > 0) {
+          showJokerBanner(`Pas assez de jokers pour préserver votre série (${missedValid} jour${s} valide${s} manqué${s}).`);
+        }
       }
     }
   }
@@ -588,13 +601,27 @@ async function checkAndUpdateStreak(sessionDate) {
   settings.longestStreak    = longest;
   settings.lastLearningDate = sessionDate;
 
-  const prevStreak = (last ? (settings.currentStreak - 1) : 0);
+  const prevStreak = (last ? (streak - 1) : 0);
   const newJoker   = Math.floor(streak/15) - Math.floor(prevStreak/15);
   if (newJoker > 0) settings.jokers = Math.min(5, (settings.jokers||0) + newJoker);
 
   await checkSerieBadges(streak);
   await saveSettings();
   refreshHome();
+}
+
+/* Compte les jours valides entre d1Str (exclu) et d2Str (exclu) */
+function countMissedValidDays(d1Str, d2Str, validDays) {
+  const d1  = new Date(d1Str);
+  const d2  = new Date(d2Str);
+  let count = 0;
+  const cur = new Date(d1);
+  cur.setDate(cur.getDate() + 1); // lendemain de d1
+  while (cur < d2) {
+    if (validDays.includes(cur.getDay())) count++;
+    cur.setDate(cur.getDate() + 1);
+  }
+  return count;
 }
 
 function showJokerBanner(msg) {
@@ -2158,26 +2185,9 @@ function computeNextWordsVersion() {
 /* ─────────────────────────────────────────────────────────────
    EXPORT / IMPORT
 ───────────────────────────────────────────────────────────── */
-async function exportProgress() {
-  // Inclure les sessions pour les stats
-  const sessions = await dbGetAll('sessions');
-  // Inclure la progression des mots (status, errorCount, consecutiveCorrect, lastSeenDate)
-  const wordProgress = allWords.map(w => ({
-    id: w.id,
-    status: w.status,
-    consecutiveCorrect: w.consecutiveCorrect || 0,
-    errorCount: w.errorCount || 0,
-    lastSeenDate: w.lastSeenDate || null,
-  }));
-
-  downloadJson({
-    version: '1.2',
-    exportDate: new Date().toISOString(),
-    settings,
-    sessions,
-    wordProgress,
-  }, `lexis-progression-${todayStr()}.json`);
-
+function exportProgress() {
+  downloadJson({ version:'1.2', exportDate: new Date().toISOString(), settings },
+    `lexis-progression-${todayStr()}.json`);
   saveSetting('lastExportDate', todayStr());
   showToast('Progression exportée');
 }
@@ -2186,43 +2196,12 @@ async function importProgress(file) {
   try {
     const data = JSON.parse(await file.text());
     if (!data.settings) throw new Error('Format invalide');
-
-    // 1. Restaurer les settings
     Object.assign(settings, data.settings);
     await saveSettings();
-
-    // 2. Restaurer les sessions si présentes
-    if (data.sessions && Array.isArray(data.sessions) && data.sessions.length > 0) {
-      const tx = db.transaction('sessions', 'readwrite');
-      tx.objectStore('sessions').clear();
-      data.sessions.forEach(s => tx.objectStore('sessions').put(s));
-      await new Promise((res,rej) => { tx.oncomplete=res; tx.onerror=rej; });
-    }
-
-    // 3. Restaurer la progression des mots si présente
-    if (data.wordProgress && Array.isArray(data.wordProgress) && data.wordProgress.length > 0) {
-      const progMap = {};
-      data.wordProgress.forEach(p => { progMap[p.id] = p; });
-      let changed = false;
-      allWords.forEach(w => {
-        if (progMap[w.id]) {
-          w.status             = progMap[w.id].status;
-          w.consecutiveCorrect = progMap[w.id].consecutiveCorrect;
-          w.errorCount         = progMap[w.id].errorCount;
-          w.lastSeenDate       = progMap[w.id].lastSeenDate;
-          changed = true;
-        }
-      });
-      if (changed) await dbPutAll('words', allWords);
-    }
-
     refreshHome();
     refreshSettings();
     showToast('Progression importée');
-  } catch(e) {
-    console.error('importProgress error:', e);
-    showToast('Erreur : fichier invalide');
-  }
+  } catch(e) { showToast('Erreur : fichier invalide'); }
 }
 
 function exportWords() {
@@ -2496,7 +2475,7 @@ function bindEvents() {
 
   // Données
   document.getElementById('btn-import-progress').addEventListener('click', () => openModal('import-progress-modal'));
-  document.getElementById('btn-export-progress').addEventListener('click', () => exportProgress());
+  document.getElementById('btn-export-progress').addEventListener('click', exportProgress);
   document.getElementById('btn-import-words').addEventListener('click',    () => openModal('import-words-modal'));
   document.getElementById('btn-export-words').addEventListener('click',    exportWords);
 
